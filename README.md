@@ -1,67 +1,141 @@
 # Agent Marketplace
 
-Working label, not a final product name. Backend-only hackathon project for agent sourcing, negotiation, and sandbox settlement using live European public data.
+A marketplace backend that lets independently operated buyer and supplier agents discover opportunities, exchange offers, agree within defined limits, and settle demo orders through Stripe sandbox. People use their existing bots; a separate observer page can show the run.
 
-**Current code: a persistent sandbox marketplace API/MCP integration, source adapters and client runtimes. Hosted readiness, actual Grok/Instinct compatibility and a complete autonomous sandbox deal are not yet verified.**
+**This is a hackathon simulation using real public procurement data.** The code is not proof of a completed live transaction. The latest merged directory adapters still need connecting to the authenticated platform and bot tools. Actual two-client compatibility, the selected demo pair, and provider-confirmed hosted settlement need rehearsal.
 
-Start with the [full team brief](TEAM_BRIEF.md), then [agent instructions](AGENTS.md), [interfaces](docs/INTERFACES.md), and [shared status](docs/STATUS.md).
+## Links and starting points
 
-Jenya's sourcing assistant starts with the [focused handover and kickoff prompt](docs/handoffs/live-sourcing.md).
+| Resource | Link |
+| --- | --- |
+| Backend | https://agent-marketplace-282760894344.europe-west1.run.app |
+| Agent setup instructions | https://agent-marketplace-282760894344.europe-west1.run.app/agent.txt |
+| MCP endpoint | https://agent-marketplace-282760894344.europe-west1.run.app/mcp |
+| API description and status | [/openapi.json](https://agent-marketplace-282760894344.europe-west1.run.app/openapi.json) and [/health](https://agent-marketplace-282760894344.europe-west1.run.app/health) |
+| Observer site | https://agentmarketplace.pages.dev |
+| Copy-paste company setup and buyer request | [Demo prompts](docs/agent-marketplace-demo-prompts.md) |
+| Current evidence and blockers | [Shared status](docs/STATUS.md) and [workstream status](docs/workstreams/) |
+| Engineering instructions | [AGENTS.md](AGENTS.md), [interfaces](docs/INTERFACES.md), [full brief](TEAM_BRIEF.md) |
 
-## Three owners
+The setup guide was reachable when checked on 30 October 2026. That does not establish deployed feature readiness. The observer contributor reports a live page tested against a local fixture; its backend proposal is [PR #18](https://github.com/MaksMakarskyi/agent-marketplace/pull/18), not part of the inspected main revision. Check the deployed revision, actual MCP tool list, and PR status before a rehearsal.
 
-| Workstream | Owner | Code | Status |
-| --- | --- | --- | --- |
-| Platform, hosting, order lifecycle, Stripe | Teammate 1 | `src/platform/`, `src/payments/`, API, contracts, migrations | [Platform](docs/workstreams/platform.md) |
-| Bot connections, supplier listener, in-chat results | Teammate 2 | `src/agents/`, `src/mcp/`, `scripts/` | [Agents](docs/workstreams/agents.md) |
-| Live data, matching, case research, acceptance | Jenya + Codex | `src/sourcing/`, `src/matching/` | [Sourcing](docs/workstreams/sourcing.md) |
+## Why this exists
 
-Names and GitHub handles for the two teammates are not assigned yet. Do not assume ownership from who last edited a file.
+An assistant can find public company information by itself. That information does not provide a counterparty that can respond, a current quote, permission to buy, or a shared agreement state.
 
-In plain language: teammate 1 builds the service and payments; teammate 2 makes the two bots actually use it; Jenya + Codex build the live search/comparison and prove the demo works. Jenya personally chooses and inspects one primary buyer/supplier scenario plus a backup, defines the demo limits, coordinates integration, and leads the final rehearsal. Codex implements the sourcing/matching code with Jenya. Each owner tests and reviews contributions; integration happens through small PRs throughout the build.
+The marketplace supplies that shared execution boundary. It connects a publicly discovered company to a registered participant, routes offers between independently running agents, validates the terms, records both sides' acceptance, and reports payment status consistently.
 
-A "demo case" is a researched real buyer requirement and a plausible real supplier, with public source links and explicit simulated terms. It is not a preloaded catalog or a forced match. A "supplier listener" is the supplier bot remaining active to receive requests and answer them; it is not a supplier-listing frontend.
+There is no backend LLM making commercial decisions. Connected clients use their own models to interpret needs and evidence, choose actions, and communicate with their humans. The backend retrieves records and enforces deterministic rules.
 
-## Start locally
+## How the intended flow works
 
-Use Node 22 and npm. The local check suite uses disposable fixtures and needs no production credentials.
+1. **Prepare access.** An operator provisions a separate scoped credential and permission ceiling for each participant. Stripe test payment setup is also operator-owned. A company name or public URL is not authorization.
+2. **Register the company.** Each bot reads the setup guide, connects to `/mcp`, and checks its participant record. It registers its demo identity and mandate only if not already registered. Existing registration is immutable; a later prompt cannot casually rewrite it.
+3. **Start with a buying need.** The buyer asks for an item, quantity, destination and deadline within its registered budget. The supplier bot remains active to receive and answer requests.
+4. **Retrieve public records.** The client's model chooses category/CPV, keywords and dates. The intended lean path queries TED supplier-award records and Polish BZP buyer notices during the run, preserving references and provenance.
+5. **Compare before account lookup.** Compare public evidence without favoring registered companies. Missing specifications and commercial facts remain unknown. An unrelated company does not become suitable because it has an account.
+6. **Resolve a counterparty.** After comparison is frozen, the backend looks for a uniquely matching registered supplier with valid permissions. An unregistered or ambiguous company remains an external lead.
+7. **Negotiate an offer.** The supplier's running bot reads the request and declares simulated terms. Agents may counter, accept or refuse within their mandates. Both sides must accept the same immutable revision; the database records one order and allocates capacity.
+8. **Settle and report.** The buyer requests sandbox settlement for the accepted amount. The backend checks authority and spending limits, calls Stripe, and records the result. Both bots read authoritative status and report it in their own chats. A read-only observer can display the same run.
+
+This is the target workflow, not a claim that every step has been demonstrated with actual named clients. Missing tools, unsuitable suppliers, incompatible terms and payment failures must produce honest outcomes rather than a scripted success.
+
+## Evidence, registration and offers are different things
+
+| Data | What it establishes | What it does not establish |
+| --- | --- | --- |
+| BZP contract notice | A public buying organization published a requirement | Our bot represents or can submit bids for that organization |
+| TED award winner | A supplier was reported as a previous contractor | Current stock, exact conformity, prices or delivery availability |
+| Registered demo company | A provisioned participant can act in this simulation within its mandate | Authority to bind the real organization |
+| Received simulated offer | A connected supplier agent declared particular demo terms | A quote from a public company that never joined |
+| Sandbox payment success | Stripe confirmed a test transaction for the order | Real funds, seller payout, profit, shipment or a legal tax invoice |
+
+The companies in the [demo prompts](docs/agent-marketplace-demo-prompts.md) are role-play candidates, not hard-coded matching rules or a proven production pair. Give each bot only its own setup prompt. Independent discovery testers must not receive the combined prompt file, target supplier identity, or an earlier shortlist.
+
+## Discovery and matching: current implementation
+
+Two paths exist. Do not silently substitute one for the other.
+
+| Path | Implementation | Current boundary |
+| --- | --- | --- |
+| **Lean structured directory, intended first demo** | `src/sourcing/directory.ts`: anonymous TED historical supplier leads and BZP buyer notices, with CPV/keyword/date filters | Adapters and live-read evidence exist. HTTP/MCP mounting, compatible identity handling and the directory comparison boundary still need integration. |
+| **Richer source-assessment workflow** | TED buyer retrieval, optional Tavily search/extraction, source reads, client-agent assessments, evidence ranking and account lookup | Existing platform/MCP code exposes this workflow when configured. It is separate from directory mode and does not establish named-bot or hosted-payment acceptance. |
+
+The lean adapter retrieves one bounded page, at most ten notices per call. It preserves provider order and does not score supplier suitability. CPV is category evidence, not a product-conformity certificate; current format validation is not an authoritative vocabulary lookup. See [ADR 0001](docs/architecture/0001-lean-procurement-directory.md) and [source evidence](docs/supplier-data-sources.md).
+
+The richer ranker checks request/run binding and supporting quotations. Proven mandatory mismatches reject a candidate; missing mandatory evidence leaves it conditional. Eligibility is not legal certification or independent verification of the client's semantic interpretation. Source text is untrusted data, never permission to change policies or invoke payments. Provider API retrieval time must not be presented as original-website freshness when the provider does not report it.
+
+The offer comparator filters quantity, unit, destination, currency, budget, deadline, expiry and mandatory confirmations, then orders qualifying offers by delivered total, delivery time and a stable ID tie-break. It compares received offers. The platform separately enforces ownership, current revisions, mandates, capacity and acceptance.
+
+### How a discovered company becomes a connected supplier
+
+The existing `Marketplace.resolve` uses an exact normalized official domain and, if supplied by the candidate, an exact public organization ID. It returns an internal participant ID only for one matching registered supplier with current grants and mandates. Public IDs are never used directly as participant IDs.
+
+Structured TED/BZP records can lack a domain or a verified identifier scheme. **Identifier-only directory resolution is not implemented in this main revision.** Backend and bot owners must connect that path using compatible country/identifier semantics. Do not fabricate domains, use fuzzy names as routing authority, or force a prepared company to win. This gap is recorded in [backend issue #11](https://github.com/MaksMakarskyi/agent-marketplace/issues/11) and [agent issue #13](https://github.com/MaksMakarskyi/agent-marketplace/issues/13).
+
+## Bot setup and permissions
+
+Use the [short prompts](docs/agent-marketplace-demo-prompts.md), then configure each bot's credential through its supported secure connection settings. The setup link describes the protocol; it does not grant anonymous registration or supply credentials.
+
+Buyer and supplier need separate chats, identities and private limits. Actual client/product compatibility must be tested: a link alone does not install an adapter, keep a bot running, or enable proactive messages. The supplier needs a listener or event-polling loop throughout negotiation and payment updates.
+
+No frontend or human confirmation button is required in the trading path. Humans set permissions before the run; the backend rejects actions outside those permissions. Email is outside the MVP.
+
+## Sandbox payment and confirmation
+
+The buyer initiates settlement after agreement. The backend derives the amount from the accepted offer and uses an operator-provisioned saved Stripe test payment method. Bots never receive raw card details or Stripe secrets. Persistent payment state and idempotency keys coordinate retries.
+
+The bot reports success only after reading `paymentStatus: succeeded` and its actual `sandboxPaymentId`. Pending, failed and requires-action are different outcomes. The current order includes a demo document and payment reference, not a public Stripe-hosted receipt URL. An authorized operator can inspect the payment in the correct Stripe sandbox dashboard.
+
+Mocked provider responses do not prove hosted settlement. The demo needs an actual sandbox-provider-confirmed result. No real funds or supplier payout is part of this MVP.
+
+## Observer dashboard and logs
+
+The dashboard is a read-only presentation surface for source provenance, comparison, representative lookup, acceptances, order and payment status. It must not initiate trades or expose participant write credentials and private limits.
+
+Main includes the human-readable endpoint log stream from [PR #19](https://github.com/MaksMakarskyi/agent-marketplace/pull/19). See [observer stream documentation](docs/observer-stream.md). It is distinct from the selected-run observer projection proposed in [dashboard PR #18](https://github.com/MaksMakarskyi/agent-marketplace/pull/18). Do not assume their tokens, protocols or scopes are interchangeable.
+
+Hosted dashboard integration still requires backend review, migration/configuration where applicable, authorized origin and appropriate read-only access. A reachable page or moving fixture events do not establish a successful real bot run.
+
+## Developer setup
+
+Use Node 22 and npm. The automated suite uses disposable fixtures, including PGlite and mocked providers, and needs no production credentials.
 
 ```sh
-git clone https://github.com/yauhenifutryn/agent-marketplace.git
+git clone https://github.com/MaksMakarskyi/agent-marketplace.git
 cd agent-marketplace
 npm ci --ignore-scripts
 npm run check
 ```
 
-`src/index.ts` exports the Web Fetch handler; `src/server.ts` supplies the Node HTTP server and operator-configured Postgres/Stripe sandbox wiring. Missing database configuration leaves business routes unavailable rather than substituting fixtures. Apply reviewed migrations and provision scoped credentials through the backend operator before hosted use.
+Owner checks: `npm run test:platform`, `npm run test:agents`, `npm run test:sourcing`, and `npm run test:e2e`. CI type-checks the project and runs these groups separately. Explicit TODOs are unfinished acceptance work, not passes.
 
-Public discovery: `GET /health`, `/agent.txt`, `/llms.txt` and `/openapi.json`. With platform configuration, authenticated `/v1/` and `/mcp` expose the implemented low-level workflow. Read the live tool list/OpenAPI and readiness; API availability does not establish a completed demo.
+For local HTTP development, run `npm run build`, then `node dist/src/server.js`. Without database configuration, business routes remain unavailable rather than using an in-memory production substitute. Reviewed migrations, scoped identity and Stripe test configuration are operator prerequisites. Follow [backend setup](docs/handoffs/2026-10-30-integration-owners.md) and [payments design](docs/payments-design.md). Never place secrets in prompts, documentation or Git.
 
-Owner commands: `npm run test:platform`, `npm run test:agents`, `npm run test:sourcing`, and `npm run test:e2e`. CI runs all four groups independently and type-checks the whole repository. Remaining explicit acceptance TODOs are not completed tests. See the current sourcing workstream for measured checks and their limitations.
+## Who owns what
 
-## Work in parallel
+| Owner | Responsibility |
+| --- | --- |
+| Backend: Maks, [#11](https://github.com/MaksMakarskyi/agent-marketplace/issues/11) | Hosting, accounts/grants, shared contracts, persistence, order rules, directory mounting/identity resolution, payments and operator setup |
+| Bots: Concorde002, [#13](https://github.com/MaksMakarskyi/agent-marketplace/issues/13) | Actual client connections, tool exposure, supplier execution, negotiation and results in both chats |
+| Jenya and sourcing assistant | Public-data adapters, normalization, comparison modules, case research and complete demo acceptance |
+| Dashboard contributor, [#18](https://github.com/MaksMakarskyi/agent-marketplace/pull/18) | Read-only observer, coordinated with backend owner; no replacement transaction engine |
 
-1. Read the shared context and claim one workstream with your human teammate.
-2. Start a small feature branch from current `origin/main` in your own checkout/worktree.
-3. Change owned files. Ask the platform owner for contract, schema, package, or API-wiring changes.
-4. Test your module using disposable fixtures. Update its status document in the same PR.
-5. Get a teammate's review and merge within your authorized scope. Pull the new main before the next change.
-6. Run the full integrated demo before calling the product ready.
+Assignments do not establish that someone is actively implementing every remaining item. Record actual progress in the workstream documents.
 
-Do not wait for three giant branches to finish before integrating. [Contribution workflow](CONTRIBUTING.md).
+Use separate branches/checkouts, one writer per shared-file sequence, and small reviewed PRs. Agree contract changes before coding consumers independently. Integrate and test usable pieces throughout the build. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Intended bot setup
+Every implementation PR updates its owner's `docs/workstreams/*.md` with behavior, exact checks, local/hosted evidence, gaps and next step. The integrator maintains [shared status](docs/STATUS.md). Agents fetch current code and read these documents before starting. Private chats and uncommitted changes do not automatically synchronize.
 
-Once implemented and hosted, each bot needs a service URL, scoped participant credential, demo company identity, and limits. Then the buyer asks for sourcing and the supplier runs a listener. A public URL and a company description alone do not register, authenticate, or wake a bot. Grokbot and Instinct support must be proven with the actual clients.
+## What makes the demo complete
 
-Results appear in each bot's existing conversation: agreed and sandbox-paid, no suitable supplier, failed negotiation, or payment failure. The bot reads authoritative order/payment status and reports it; the platform does not need a separate email service or notification frontend. Email is outside the MVP.
+- Fresh public evidence produces a relevant comparison without a hard-coded target or registration bias.
+- The selected identity resolves uniquely to the intended registered demo supplier.
+- Two actual clients exchange offers and agree on the same revision within their limits.
+- One order receives provider-confirmed sandbox status; both bots report it accurately.
+- The observer shows that same run, with earlier runs and fixture evidence labeled separately.
+- Changed incompatible terms produce refusal and no new order/payment.
 
-Public evidence is live; company representation and commercial terms are simulated. No real cards, real company outreach, procurement submissions, or binding transactions are part of the demo. Organizer acceptance of sandbox settlement and the host's backend-only presentation remains unconfirmed.
+Primary/backup cases and the full success/refusal rehearsal remain to be qualified. A healthy endpoint, merged PR or green fixture suite cannot replace that evidence. Organizer acceptance of a simulated agreement/sandbox payment must also be resolved against the challenge rules.
 
-## Developer handoffs
-
-- [Backend/source architecture and remaining directory integration](docs/architecture/0001-lean-procurement-directory.md).
-- [Three-minute demo, observer dashboard and optional Jev experiment](docs/handoffs/2026-10-30-three-minute-demo.md), instructions only; no dashboard or Jev implementation.
-- [Backend and bot owner tasks](docs/handoffs/2026-10-30-integration-owners.md). Start from current main after the integration merge; reconcile the older checkpoint with current code.
-
-Agents should read `/agent.txt` or `/llms.txt` and MCP initialize instructions, then discover the available tools. The newly implemented TED award/BZP directory modules are not yet mounted as hosted tools.
+Jev is an optional, unbenchmarked relevance or CPV-selection experiment, not a prerequisite. The [three-minute demo brief](docs/handoffs/2026-10-30-three-minute-demo.md) describes it alongside presentation requirements. Current behavior and measured evidence take precedence over older plans.
