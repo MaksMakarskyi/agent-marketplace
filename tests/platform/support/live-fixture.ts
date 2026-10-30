@@ -27,7 +27,7 @@ export function offerTerms(requestId: string, amountMinor: number, extra: Record
     termsOrigin: "demo-supplier-declaration", demo: true, ...extra };
 }
 
-export async function fixture() {
+export async function fixture(options: { sourceText?: string } = {}) {
   const db = new PGlite();
   await db.exec("create role anon; create role authenticated;");
   for (const name of ["20261030120000_initial_schema.sql", "20261030133000_live_marketplace_api.sql"]) {
@@ -51,7 +51,7 @@ export async function fixture() {
     if (request.url.includes("ted.europa.eu")) return Response.json({ notices: [{ "publication-number": "123456-2026", "publication-date": "2026-10-30Z",
       "notice-type": "cn-standard", "notice-title": { eng: "Steel components" }, "description-proc": { eng: "Steel components ISO 9001:2015" } }], totalNoticeCount: 1, timedOut: false });
     if (request.url.endsWith("/search")) return Response.json({ results: [{ url: "https://alpha.example.com/products", title: "Alpha", content: "Lead only" }] });
-    return Response.json({ results: [{ url: "https://alpha.example.com/products", raw_content: "Alpha Components manufactures steel components. ISO 9001:2015 certified." }], failed_results: [] });
+    return Response.json({ results: [{ url: "https://alpha.example.com/products", raw_content: options.sourceText ?? "Alpha Components manufactures steel components. ISO 9001:2015 certified." }], failed_results: [] });
   };
   const collector = new ApiEvidenceCollector({ now, ted: new TedClient({ now, fetch: fetcher }),
     search: new TavilySearch({ now, fetch: fetcher, access: { mode: "keyless" } }), extract: new TavilyExtract({ now, fetch: fetcher, access: { mode: "keyless" } }) });

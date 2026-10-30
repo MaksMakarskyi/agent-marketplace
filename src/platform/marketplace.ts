@@ -255,8 +255,11 @@ export class Marketplace {
       await this.readRequest(db, actor, requestId, true);
       const candidate = (await db.query(`select c.id from marketplace.candidates c join marketplace.discovery_runs d on d.id=c.discovery_id
         join marketplace.candidate_accounts a on a.candidate_id=c.id where d.request_id=$1 and d.status='complete' and a.participant_id=$2
-        and c.eligible='yes' and d.completed_at >= $3 order by d.created_at desc limit 1`, [requestId, supplierId, new Date(this.now().getTime() - 300_000).toISOString()])).rows[0];
-      if (!candidate) throw new PlatformError(409, "QUALIFYING_CANDIDATE_REQUIRED", "A freshly ranked qualifying connected candidate is required");
+        and d.id=(select latest.id from marketplace.discovery_runs latest where latest.request_id=$1 order by latest.created_at desc,latest.id desc limit 1)
+        and c.eligible in ('yes','conditional') and d.completed_at >= $3 order by d.created_at desc limit 1`, [requestId, supplierId, new Date(this.now().getTime() - 300_000).toISOString()])).rows[0];
+      // A quote is an inquiry: unknown terms may be clarified, but proven mismatches remain excluded.
+      // Offer validation, exact two-party acceptance and settlement still enforce all transaction terms.
+      if (!candidate) throw new PlatformError(409, "QUALIFYING_CANDIDATE_REQUIRED", "A freshly ranked connected candidate without a proven mandatory mismatch is required");
       await this.mandate(db, supplierId);
       const quoteId = crypto.randomUUID();
       await db.query("insert into marketplace.quote_requests(id,request_id,supplier_id,candidate_id) values($1,$2,$3,$4) on conflict(request_id,supplier_id) do nothing", [quoteId, requestId, supplierId, candidate.id]);

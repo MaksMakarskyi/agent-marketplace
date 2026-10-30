@@ -26,6 +26,8 @@ MCP/custom-tool support for the named clients is unverified. Implement one demon
 
 ## Orders, payment, and bot result reporting
 
+Quote inquiry update (30 October): a freshly ranked, uniquely connected source-identified candidate may receive a quote request when eligibility is `yes` or `conditional`. `conditional` preserves unknown public requirements; it does not certify them or authorize purchase. Proven mandatory mismatches (`no`) remain excluded. Supplier offers must still confirm every mandatory requirement and satisfy the request's quantity, destination, budget and delivery deadline; both parties accept the same revision before an order exists. No payment rule changes.
+
 Both sides accept the same current offer. Counteroffers make previous unagreed revisions stale. Once agreed, terms are immutable and one order exists. Platform atomically enforces one close and supplier capacity.
 
 Offer `deliveredTotal` includes tax and delivery; `taxMinor` and `deliveryMinor` are included components, not additional charges. Reject inconsistent totals. Price, stock, and delivery declarations are demo supplier terms, not inferred facts about the real company.

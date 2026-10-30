@@ -72,7 +72,7 @@ async function fixture(options: { buyerNip?: string | null; noticeNip?: string |
     if (url.hostname === "api.tavily.com" && url.pathname.endsWith("/search")) {
       const body = await request.json() as { query: string; max_results: number };
       searchQueries.push(body.query);
-      assert.equal(body.max_results, 1);
+      assert.equal(body.max_results, 3);
       return Response.json({ results: [{ url: "https://supplier.example.com/catalog", title: "Catalog", content: "Example Supplier" }] });
     }
     if (url.hostname === "api.tavily.com") return Response.json({ results: [{ url: "https://supplier.example.com/catalog",
@@ -232,16 +232,18 @@ test("different TED winner names sharing one Polish identifier stay ambiguous in
 });
 
 test("a TED supplier identifier reported only for another country cannot support a Polish account identity", async () => {
-  const { db, market } = await fixture({ awardCountry: "DEU" });
+  const { db, market, searchQueries } = await fixture({ awardCountry: "DEU" });
   try {
     await market.searchPublicBuyerNotices(buyer, { cpvCode: "39100000", limit: 5 });
     const request = await market.createRequest(buyer, requestTerms, "create-directory-request-foreign-award");
     const { discoveryId } = await market.startDiscovery(buyer, request.id, "discover-directory-request-foreign-award");
+    assert.equal((await market.getDiscovery(buyer, discoveryId)).status, "failed");
+    assert.equal(searchQueries.length, 0, "foreign award identities must not occupy Polish supplier website searches");
     const supplierIdText = `PL ${supplierNip.slice(0, 3)} ${supplierNip.slice(3, 6)} ${supplierNip.slice(6, 8)} ${supplierNip.slice(8)}`;
     const supplierQuotation = `Example Supplier, NIP ${supplierIdText}, supplies office chairs.`;
     const assessment = { discoveryId, buyerNoticeNumber: buyerRef, candidates: [{ company: { name: "Example Supplier", officialDomain: "supplier.example.com", publicOrganizationId: supplierIdText },
       identity: { sourceId: `${discoveryId}:source-1`, quotation: supplierQuotation, organizationIdQuotation: supplierQuotation }, claims: [] }] };
-    await assert.rejects(market.submitAssessment(buyer, discoveryId, assessment, "assess-directory-request-foreign-award"), /assessment|directory|identity/i);
+    await assert.rejects(market.submitAssessment(buyer, discoveryId, assessment, "assess-directory-request-foreign-award"));
   } finally { await db.close(); }
 });
 

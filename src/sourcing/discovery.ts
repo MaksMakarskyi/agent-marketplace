@@ -31,7 +31,7 @@ export interface DiscoveryEvidenceBundle {
   /** Backend-fetched public directory evidence for a selected BZP notice. Never accepted from tools. */
   directoryContext?: { buyer: DirectoryEntry; suppliers: DirectoryEntry[]; buyerQuery: DirectoryQuery; supplierQuery: DirectoryQuery;
     buyerSource: DirectoryResult["source"]; supplierSource: DirectoryResult["source"];
-    supplierSearches: { supplierId: string; query: string; source: SupplierSearchResult["source"] | null }[] };
+    supplierSearches: { supplierId: string; query: string; hitUrls: string[]; source: SupplierSearchResult["source"] | null }[] };
 }
 
 export interface CollectionOptions {
@@ -93,7 +93,8 @@ export class ApiEvidenceCollector {
       startedAt, completedAt: startedAt, phase: "failed", supplierQuery: query,
       buyerNotices: [], sources: [], sourceErrors: [],
     };
-    // MVP_LIMIT: one selected active TED notice, at most three name/ID searches, one extract batch, no fallback/retry.
+    // MVP_LIMIT: one selected active TED notice, at most three Polish name/ID searches with three hits each,
+    // one extract batch capped at five pages, and no fallback/retry.
     try {
       let sourceQuery = query;
       let collectedHits: SupplierSearchHit[] | undefined;
@@ -108,10 +109,13 @@ export class ApiEvidenceCollector {
         // MVP_LIMIT: one TED page and at most 25 winner rows; preserve conflicting names so assessment cannot treat them as one identity.
         const groups = new Map<string, DirectoryEntry[]>();
         for (const entry of supplierLeads.entries) {
-          if (entry.role !== "supplier" || !entry.company.publicOrganizationId || !entry.company.country) continue;
-          const sourceId = entry.company.publicOrganizationId;
-          const normalizedId = entry.company.country === "POL" ? normalizePolishNip(sourceId) : null;
-          const key = `${entry.company.country}|${normalizedId ?? sourceId.normalize("NFC").toUpperCase()}`;
+          if (entry.role !== "supplier" || entry.company.country !== "POL" || !entry.company.publicOrganizationId) continue;
+          const normalizedId = normalizePolishNip(entry.company.publicOrganizationId);
+          if (!normalizedId) {
+            bundle.sourceErrors.push({ url: supplierLeads.source.url, message: "Polish TED lead lacks a supported ten-digit NIP; public website search skipped" });
+            continue;
+          }
+          const key = `POL|${normalizedId}`;
           groups.set(key, [...(groups.get(key) ?? []), entry]);
         }
         const suppliers: DirectoryEntry[] = [];
@@ -128,28 +132,50 @@ export class ApiEvidenceCollector {
         if (!suppliers.length) throw new Error("No uniquely identified historical TED award leads");
         const searchTargets = suppliers.slice(0, Math.min(3, this.maximumSources));
         const searchQueries = searchTargets.map((entry) => ({ supplierId: entry.id, query: supplierWebsiteSearchQuery(entry) }));
-        const searchResults = await Promise.allSettled(searchQueries.map(({ query: searchQuery }) => this.search.search(searchQuery, { limit: 1 })));
+        const searchResults = await Promise.allSettled(searchQueries.map(({ query: searchQuery }) => this.search.search(searchQuery, { limit: 3 })));
         const supplierSearches: NonNullable<DiscoveryEvidenceBundle["directoryContext"]>["supplierSearches"] = [];
-        const hits: SupplierSearchHit[] = [];
+        const hitsByLead: SupplierSearchHit[][] = [];
         const urls = new Set<string>();
         searchResults.forEach((result, index) => {
           const target = searchQueries[index]!;
           if (result.status === "rejected") {
-            supplierSearches.push({ ...target, source: null });
+            supplierSearches.push({ ...target, hitUrls: [], source: null });
             bundle.sourceErrors.push({ url: TAVILY_SEARCH_URL, message: "Supplier website search failed for a public TED lead" });
             return;
           }
-          supplierSearches.push({ supplierId: target.supplierId, query: result.value.query, source: result.value.source });
+          const leadHits: SupplierSearchHit[] = [];
+          const returnedHits: SupplierSearchHit[] = [];
+          for (const hit of result.value.hits.slice(0, 3)) {
+            const url = normalizeSourceUrl(hit.url);
+            if (isExcludedSupplierLeadHost(url)) {
+              bundle.sourceErrors.push({ url: TAVILY_SEARCH_URL, message: "Third-party company-profile result omitted from supplier evidence retrieval" });
+              continue;
+            }
+            returnedHits.push({ ...hit, url });
+          }
+          supplierSearches.push({ supplierId: target.supplierId, query: result.value.query,
+            hitUrls: returnedHits.map((hit) => hit.url), source: result.value.source });
           bundle.sourceErrors.push(...result.value.sourceErrors);
-          for (const hit of result.value.hits) {
-            if (urls.has(hit.url)) continue;
-            urls.add(hit.url);
+          for (const hit of returnedHits) {
+            const url = normalizeSourceUrl(hit.url);
+            if (urls.has(url)) continue;
+            urls.add(url);
+            leadHits.push({ ...hit, url });
+          }
+          hitsByLead.push(leadHits);
+        });
+        // Round-robin the bounded result lists so one noisy search cannot consume all five extract slots.
+        const hits: SupplierSearchHit[] = [];
+        for (let index = 0; index < 3 && hits.length < this.maximumSources; index++) {
+          for (const leadHits of hitsByLead) {
+            const hit = leadHits[index];
+            if (!hit || hits.length >= this.maximumSources) continue;
             hits.push(hit);
           }
-        });
+        }
         bundle.directoryContext = { buyer, suppliers, buyerQuery: options.buyerDirectoryQuery, supplierQuery,
           buyerSource: buyers.source, supplierSource: supplierLeads.source, supplierSearches };
-        collectedHits = hits.slice(0, this.maximumSources);
+        collectedHits = hits;
       } else {
         const buyers = await this.ted.search({ query: `publication-number = ${options.buyerNoticeNumber}`, scope: "ACTIVE", limit: 1 });
         bundle.sourceErrors.push(...buyers.sourceErrors);
@@ -263,19 +289,29 @@ export async function validateBundle(actor: ActorContext, request: SourcingReque
     }
     const primaryBuyerCpv = context.buyer.cpvCodes[0];
     const expectedSupplierCpv = primaryBuyerCpv ? broadCpvCode(primaryBuyerCpv) : context.buyerQuery.cpvCode;
-    if (expectedSupplierCpv ? context.supplierQuery.cpvCode !== expectedSupplierCpv : context.supplierQuery.keywords !== context.buyerQuery.keywords) {
+    if (context.supplierQuery.supplierCountry !== "POL" ||
+        (expectedSupplierCpv ? context.supplierQuery.cpvCode !== expectedSupplierCpv : context.supplierQuery.keywords !== context.buyerQuery.keywords)) {
       throw new DiscoveryInputError("INVALID_INPUT", "Supplier directory query is not bound to the selected buyer CPV");
     }
     const searchTargets = context.suppliers.slice(0, context.supplierSearches.length);
+    const searchedUrls = new Set<string>();
     for (const [index, search] of context.supplierSearches.entries()) {
       const target = searchTargets[index];
       if (!isRecord(search) || !target) throw new DiscoveryInputError("INVALID_INPUT", "Supplier website search receipt is invalid or unbound");
       const source = search.source;
-      if (search.supplierId !== target.id || search.query !== supplierWebsiteSearchQuery(target) ||
+      const leadUrls = new Set<string>();
+      if (search.supplierId !== target.id || search.query !== supplierWebsiteSearchQuery(target) || !Array.isArray(search.hitUrls) ||
+          search.hitUrls.length > 3 || search.hitUrls.some((url) => {
+            try { const normalized = normalizeSourceUrl(url); if (normalized !== url || leadUrls.has(url)) return true; leadUrls.add(url); searchedUrls.add(url); return false; }
+            catch { return true; }
+          }) || (search.hitUrls.length > 0 && source === null) ||
           (source !== null && (!isRecord(source) || source.url !== TAVILY_SEARCH_URL || !/^sha256:[a-f0-9]{64}$/.test(String(source.contentHash)) ||
             !Number.isFinite(isoTimestamp(source.retrievedAt)) || isoTimestamp(source.retrievedAt) < start || isoTimestamp(source.retrievedAt) > end))) {
         throw new DiscoveryInputError("INVALID_INPUT", "Supplier website search receipt is invalid or unbound");
       }
+    }
+    if (bundle.sources.some((source) => !searchedUrls.has(source.url))) {
+      throw new DiscoveryInputError("INVALID_INPUT", "Extracted supplier source was not returned by a recorded public search");
     }
     const supplierFrom = directoryDay(context.supplierQuery.publishedFrom), supplierTo = directoryDay(context.supplierQuery.publishedTo);
     if (!Number.isFinite(supplierFrom) || !Number.isFinite(supplierTo) || supplierFrom > supplierTo || supplierTo - supplierFrom > 365 * 24 * 60 * 60 * 1000) {
@@ -304,7 +340,7 @@ export async function evidenceForAgent(actor: ActorContext, request: SourcingReq
       directorySuppliers: structuredClone(bundle.directoryContext.suppliers), directorySearch: {
         buyerFilters: structuredClone(bundle.directoryContext.buyerQuery), supplierFilters: structuredClone(bundle.directoryContext.supplierQuery),
         supplierSearches: structuredClone(bundle.directoryContext.supplierSearches),
-        supplierLeadCoverage: "one TED page, up to 25 winner rows; independent public website searches cover at most three returned TED leads and one result each",
+        supplierLeadCoverage: "one TED page with source-native Polish winner filter, up to 25 winner rows; independent public website searches cover at most three returned TED leads and three results per lead, then extract at most five selected pages",
       }, directorySources: {
         buyer: structuredClone(bundle.directoryContext.buyerSource), suppliers: structuredClone(bundle.directoryContext.supplierSource),
       } } : {}),
@@ -351,6 +387,13 @@ function supplierWebsiteSearchQuery(entry: DirectoryEntry): string {
   return `${name} ${publicId} official supplier website`;
 }
 
+function isExcludedSupplierLeadHost(value: string): boolean {
+  const host = new URL(value).hostname.toLowerCase();
+  // These third-party company-profile pages were observed as top results, not supplier-owned websites.
+  const excluded = ["company-information.service.gov.uk", "pitchbook.com"];
+  return excluded.some((domain) => host === domain || host.endsWith(`.${domain}`));
+}
+
 function directoryDay(value: string): number {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return NaN;
   const date = new Date(`${value}T00:00:00Z`);
@@ -360,7 +403,8 @@ function directoryDay(value: string): number {
 function supplierDirectoryQuery(buyer: DirectoryEntry, buyerQuery: DirectoryQuery, now: Date): DirectoryQuery {
   const publishedTo = now.toISOString().slice(0, 10);
   const publishedFrom = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const window = { publishedFrom, publishedTo, ...(buyerQuery.limit !== undefined ? { limit: buyerQuery.limit } : {}) };
+  const window = { publishedFrom, publishedTo, supplierCountry: "POL" as const,
+    ...(buyerQuery.limit !== undefined ? { limit: buyerQuery.limit } : {}) };
   const primaryCpv = buyer.cpvCodes[0];
   if (primaryCpv) return { ...window, cpvCode: broadCpvCode(primaryCpv) };
   if (buyerQuery.cpvCode) return { ...window, cpvCode: buyerQuery.cpvCode };

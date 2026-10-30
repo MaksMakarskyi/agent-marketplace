@@ -18,6 +18,8 @@ This owner implements hosting and Stripe; Jenya does not need to duplicate them.
 
 ## Current state
 
+Local inquiry-boundary repair (30 October, `fix/discovery-quote-handoff`): a quote can be requested from an identified, connected candidate ranked `conditional`, so a supplier can clarify unknown commercial terms. Candidates ranked `no` still cannot be invited. Exact-offer confirmation, both acceptances, limits, capacity and sandbox settlement remain unchanged. Two new disposable-fixture tests pass: conditional inquiry through confirmed offer and buyer acceptance with payment not started; and a proven mismatch producing no quote. The source-retrieval repair and combined verification are being integrated separately; no hosted behavior is claimed from these tests.
+
 `main` (`674a107`) implements, with local tests: scoped token authentication and bounded registration, persistent discovery evidence and client assessment, frozen ranking, post-ranking account resolution, offers with both persisted acceptances, one order per request, and Stripe sandbox settlement through `POST /v1/orders/{id}/settle`. HTTP and `/mcp` share one implementation, and the observer page API and `/observer/ws` stream sit alongside it. This branch (PR #15) adds the PR #12 review fixes below on top of `main`.
 
 **Hosted, unauthenticated only.** Cloud Run serves `674a107`, without these fixes, and Supabase has all three migrations. There are no operator grants, participants, bot credentials, saved card or observer key yet, so no authenticated hosted operation has run. `marketplaceReady` stays `false`.

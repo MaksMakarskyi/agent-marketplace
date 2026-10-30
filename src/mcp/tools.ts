@@ -437,7 +437,9 @@ export const MCP_TOOLS: readonly McpToolDefinition[] = [
   {
     name: "request_quote",
     description: describe(
-      "Ask a discovered supplier participant to quote on one of the caller's sourcing requests.",
+      "Ask a source-identified connected supplier with eligibility yes or conditional to quote. " +
+        "Unknown requirements can be clarified in the offer; a proven mandatory mismatch remains refused. " +
+        "This inquiry does not accept terms, create an order or authorize payment.",
     ),
     inputSchema: {
       type: "object",

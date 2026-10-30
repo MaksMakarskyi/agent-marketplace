@@ -7,6 +7,8 @@ export const BZP_DIRECTORY_URL = "https://ezamowienia.gov.pl/mo-board/api/v1/not
 export interface DirectoryQuery {
   cpvCode?: string;
   keywords?: string;
+  /** Restrict TED winner searches by the source-native country field. Poland-only MVP path. */
+  supplierCountry?: "POL";
   publishedFrom: string;
   publishedTo: string;
   limit?: number;
@@ -59,9 +61,10 @@ export class ProcurementDirectory {
     const search = validateQuery(query, TED_DIRECTORY_URL);
     const clauses = ["notice-type = can-standard", `publication-date >= ${search.publishedFrom.replaceAll("-", "")}`,
       `publication-date <= ${search.publishedTo.replaceAll("-", "")}`];
+    if (search.supplierCountry) clauses.push(`winner-country = ${search.supplierCountry}`);
     if (search.cpvCode) clauses.push(`classification-cpv = ${search.cpvCode}`);
     if (search.keywords) clauses.push(`FT ~ "${search.keywords}"`);
-    const result = await this.ted.post({ query: clauses.join(" AND "), fields: ["publication-number", "publication-date", "notice-type",
+    const result = await this.ted.post({ query: `${clauses.join(" AND ")} SORT BY publication-date DESC`, fields: ["publication-number", "publication-date", "notice-type",
       "classification-cpv", "winner-name", "winner-identifier", "winner-country"], page: 1, limit: search.limit,
       scope: "ALL", onlyLatestVersions: true, checkQuerySyntax: false }, options.signal);
     const payload = result.payload;
@@ -87,7 +90,8 @@ export class ProcurementDirectory {
   }
 }
 
-type Search = { cpvCode: string | undefined; keywords: string | undefined; publishedFrom: string; publishedTo: string; limit: number };
+type Search = { cpvCode: string | undefined; keywords: string | undefined; supplierCountry: "POL" | undefined;
+  publishedFrom: string; publishedTo: string; limit: number };
 function record(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function dateOnly(value: unknown): value is string {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) &&
@@ -95,14 +99,16 @@ function dateOnly(value: unknown): value is string {
 }
 function validateQuery(query: DirectoryQuery, url: string): Search {
   const fail = (): never => { throw new SourceApiError("INVALID_INPUT", url, "Invalid directory filters: use CPV and/or plain keywords, ordered calendar dates and limit 1..10"); };
-  if (!record(query) || Object.keys(query).some((key) => !["cpvCode", "keywords", "publishedFrom", "publishedTo", "limit"].includes(key)) ||
+  if (!record(query) || Object.keys(query).some((key) => !["cpvCode", "keywords", "supplierCountry", "publishedFrom", "publishedTo", "limit"].includes(key)) ||
       !dateOnly(query.publishedFrom) || !dateOnly(query.publishedTo) || query.publishedFrom > query.publishedTo ||
+      (query.supplierCountry !== undefined && (url !== TED_DIRECTORY_URL || query.supplierCountry !== "POL")) ||
       (query.cpvCode !== undefined && (typeof query.cpvCode !== "string" || !/^\d{8}(-\d)?$/.test(query.cpvCode))) ||
       (query.keywords !== undefined && (typeof query.keywords !== "string" || !/^[\p{L}\p{N}][\p{L}\p{N} ,.'-]{0,119}$/u.test(query.keywords)))) fail();
   const cpvCode = query.cpvCode?.slice(0, 8), keywords = query.keywords?.trim(), limit = query.limit ?? 5;
   // MVP_LIMIT: one page, at most ten notices and 100 named suppliers per notice. No bulk catalogue ingestion.
   if ((!cpvCode && !keywords) || !Number.isInteger(limit) || limit < 1 || limit > 10) fail();
-  return { publishedFrom: query.publishedFrom, publishedTo: query.publishedTo, cpvCode, keywords, limit };
+  return { publishedFrom: query.publishedFrom, publishedTo: query.publishedTo, cpvCode, keywords,
+    supplierCountry: query.supplierCountry, limit };
 }
 function text(value: unknown, max = 500): string {
   if (typeof value !== "string" || !value.trim() || value.length > max || /[\u0000-\u001f\u007f]/u.test(value)) throw new Error("Invalid text");
@@ -184,6 +190,9 @@ function normalize(result: JsonApiResult, rows: unknown[], search: Search, provi
     try {
       if (!record(raw)) throw new Error("Invalid record");
       const parsed = provider === "ted" ? supplierEntries(raw, search) : { entries: buyerEntries(raw, search, source.retrievedAt), ambiguous: false };
+      // Keep uncertain identities visible, but never pass an explicitly foreign winner into the Poland-only path.
+      if (provider === "ted" && search.supplierCountry && parsed.entries.some((entry) =>
+        entry.company.country !== null && entry.company.country !== search.supplierCountry)) throw new Error("Foreign supplier omitted");
       const key = provider === "ted" ? parsed.entries[0]!.notice.reference : parsed.entries[0]!.id;
       if (parsed.ambiguous) sourceErrors.push({ url: source.url, message: `Notice at index ${index}: ambiguous winner fields remain unbound` });
       const previous = groups.get(key);

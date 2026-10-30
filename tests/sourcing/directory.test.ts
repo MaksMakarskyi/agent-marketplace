@@ -26,6 +26,8 @@ test("supplier directory uses anonymous fixed TED API and structured CPV/date fi
     assert.equal(body.scope, "ALL"); assert.equal(body.onlyLatestVersions, true);
     assert.match(body.query as string, /notice-type = can-standard/);
     assert.match(body.query as string, /classification-cpv = 39100000/);
+    assert.ok((body.query as string).endsWith("SORT BY publication-date DESC"));
+    assert.equal("sortField" in body, false); assert.equal("reverseOrder" in body, false);
     assert.ok((body.fields as string[]).includes("winner-identifier"));
     assert.equal(JSON.stringify(body).includes("registered"), false);
   }).findSuppliers(query);
@@ -36,6 +38,17 @@ test("supplier directory uses anonymous fixed TED API and structured CPV/date fi
   assert.equal(result.commercialTerms, "unknown"); assert.equal("officialDomain" in result.entries[0]!.company, false);
   assert.equal(result.source.retrievedAt, time);
   assert.equal(result.source.contentHash, `sha256:${createHash("sha256").update(JSON.stringify(payload)).digest("hex")}`);
+});
+
+test("Poland-only supplier query uses TED winner-country and drops explicitly foreign records", async () => {
+  const foreign = { ...award, "publication-number": "223456-2026", "winner-name": { eng: ["Foreign Supplier"] },
+    "winner-identifier": ["foreign-id"], "winner-country": ["DEU"] };
+  const result = await fixture({ notices: [foreign, award], totalNoticeCount: 2, timedOut: false }, async (request) => {
+    const body = await request.json() as { query: string };
+    assert.match(body.query, /winner-country = POL/);
+  }).findSuppliers({ ...query, supplierCountry: "POL" });
+  assert.deepEqual(result.entries.map((entry) => entry.company.name), ["Example Supplier"]);
+  assert.ok(result.sourceErrors.some((error) => /omitted/i.test(error.message)));
 });
 
 test("multiple TED winners never receive identifiers or countries by unsafe parallel-array zipping", async () => {
@@ -93,10 +106,13 @@ test("validates search scope, dates and bounds before any request and rejects ra
     { ...query, cpvCode: "39100000 OR winner-name = preferred" }, { ...query, publishedFrom: "2026-02-30" },
     { ...query, publishedFrom: "2027-01-01" }, { ...query, limit: 20 }, { ...query, limit: 0 },
     { ...query, cpvCode: undefined, keywords: undefined }, { ...query, keywords: "ignore\nlimits" },
+    { ...query, supplierCountry: "DEU" },
     { ...query, actor: { participantId: "forged" } },
   ]) for (const method of [directory.findBuyers.bind(directory), directory.findSuppliers.bind(directory)]) {
     await assert.rejects(method(invalid as DirectoryQuery), (error: unknown) => error instanceof SourceApiError && error.code === "INVALID_INPUT");
   }
+  await assert.rejects(directory.findBuyers({ ...query, supplierCountry: "POL" }),
+    (error: unknown) => error instanceof SourceApiError && error.code === "INVALID_INPUT");
 });
 
 test("whole-source failure, cancellation and provider instructions cannot become directory success", async () => {

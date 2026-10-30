@@ -2,6 +2,8 @@
 
 These named companies are simulated representatives and a researched candidate pair, not a verified successful match. Published at Jenya's request. For independent discovery testing, give each bot only its own setup prompt; do not give the combined file or target supplier identity to the buyer/research agent. The example companies must never become ranking or routing exceptions in code.
 
+Case blocker checked 30 October: TED award `725601-2026` lists `www.domzpluse.pl` for DZP, but the domain currently does not resolve. Its historical award is real; its official-site identity and present product evidence are not qualified for this demo. Do not silently substitute a similarly spelled domain or claim this pair can complete discovery. A replacement supplier case needs fresh identity and product evidence before setup.
+
 Give each bot only its own setup prompt in a separate chat. Backend setup guide: https://agent-marketplace-282760894344.europe-west1.run.app/agent.txt . With automatic onboarding deployed and its migration applied, each bot initializes its own MCP connection without a manually supplied key and retains the returned Mcp-Session-Id. The bot then registers its own demo company profile. Do not request an operator token or vault entry. Platform instructions handle the trading workflow.
 
 Use after the merged backend and its migrations are deployed. Budgets and simulated supplier commercial terms must be provided separately; these prompts do not create missing prices, capacity or delivery commitments.
