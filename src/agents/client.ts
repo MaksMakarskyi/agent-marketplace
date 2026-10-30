@@ -17,6 +17,11 @@ export interface PlatformClientOptions {
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   retry?: { attempts: number; baseDelayMs: number };
+  /**
+   * Live platform contract: offer participants are derived from the bearer token, so sending
+   * buyerId/supplierId is rejected. The fixture platform still requires them, hence the flag.
+   */
+  omitActorIdsFromOffers?: boolean;
 }
 
 export interface MutationOptions {
@@ -74,6 +79,7 @@ export class PlatformClient {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly maxAttempts: number;
   private readonly baseDelayMs: number;
+  private readonly omitActorIdsFromOffers: boolean;
 
   constructor(options: PlatformClientOptions) {
     const token = options.token.trim();
@@ -91,6 +97,7 @@ export class PlatformClient {
     const retry = options.retry ?? { attempts: DEFAULT_ATTEMPTS, baseDelayMs: DEFAULT_BASE_DELAY_MS };
     this.maxAttempts = positiveInteger(retry.attempts, "retry.attempts");
     this.baseDelayMs = nonNegativeInteger(retry.baseDelayMs, "retry.baseDelayMs");
+    this.omitActorIdsFromOffers = options.omitActorIdsFromOffers === true;
   }
 
   async registerParticipant(
@@ -171,7 +178,12 @@ export class PlatformClient {
 
   async submitOffer(input: Omit<Offer, "id">, options: MutationOptions = {}): Promise<Offer> {
     const path = `/v1/requests/${encodeURIComponent(input.requestId)}/offers`;
-    return this.send("POST", path, input, options.idempotencyKey ?? stableKey("submitOffer", path, input));
+    let body: Omit<Offer, "id"> | Omit<Offer, "id" | "buyerId" | "supplierId"> = input;
+    if (this.omitActorIdsFromOffers) {
+      const { buyerId: _buyerId, supplierId: _supplierId, ...terms } = input;
+      body = terms;
+    }
+    return this.send("POST", path, body, options.idempotencyKey ?? stableKey("submitOffer", path, body));
   }
 
   async acceptOffer(offerId: string, options: MutationOptions = {}): Promise<AcceptanceResult> {

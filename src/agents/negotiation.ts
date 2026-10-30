@@ -18,6 +18,7 @@ import {
 export type NegotiationNoMatchReason =
   | "discovery_failed"
   | "discovery_timeout"
+  | "assessment_rejected"
   | "no_candidates"
   | "no_connected_supplier"
   | "refused"

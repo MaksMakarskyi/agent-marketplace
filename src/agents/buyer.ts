@@ -9,6 +9,7 @@ import type {
   RegistrationInput,
   SourcingRequest,
 } from "../contracts.js";
+import type { AgentAssessment } from "../sourcing/assessment.js";
 import { PlatformClient, PlatformClientError, stableHash } from "./client.js";
 import { DEFAULT_PAYMENT_WAIT_MS, type BuyerAgentConfig } from "./config.js";
 import {
@@ -49,6 +50,35 @@ export type BuyerOutcome = BuyerOrderOutcome | BuyerNoMatchOutcome;
 /** In-chat transport injected by the caller; failure never changes order state. */
 export type BuyerReportSink = (outcome: BuyerOutcome) => Promise<void> | void;
 
+/** A retrieved source page, fully paged within the configured bound. */
+export interface LiveEvidenceSource {
+  id: string;
+  url: string;
+  text: string;
+  /** True when the page cap stopped reading before the source ended. */
+  truncated: boolean;
+}
+
+/** Everything the client model may use to interpret evidence. Never an authority. */
+export interface LiveAssessmentContext {
+  discoveryId: string;
+  buyerNoticeNumber: string;
+  evidence: unknown;
+  sources: readonly LiveEvidenceSource[];
+}
+
+/**
+ * The live flow: the platform collects evidence and stops; the caller's model reads it and
+ * returns an assessment. There is no backend LLM and no seeded supplier.
+ */
+export interface LiveAssessmentOptions {
+  /** Real notice number the client selected from search_buyer_notices. Never invented here. */
+  buyerNoticeNumber: string;
+  assess: (context: LiveAssessmentContext) => Promise<AgentAssessment>;
+  maxSources?: number;
+  maxPagesPerSource?: number;
+}
+
 export interface BuyerRunnerOptions {
   config: BuyerAgentConfig;
   client: PlatformClient;
@@ -79,6 +109,8 @@ export interface BuyerRunnerOptions {
   discoveryMaxPolls?: number;
   maxCandidates?: number;
   maxEventPolls?: number;
+  /** Enables the live, client-assessed discovery flow. Absent keeps the fixture polling path. */
+  live?: LiveAssessmentOptions;
 }
 
 type DiscoveryPollOutcome =
@@ -122,10 +154,12 @@ export class BuyerRunner {
   private readonly maxCandidates: number;
   private readonly maxEventPolls: number;
   private readonly runId: string;
+  private readonly live: LiveAssessmentOptions | undefined;
   private readonly ledger: ReportLedger | undefined;
   private participantId: ParticipantId | undefined;
   private currentRequestId: string | undefined;
   private cursor: string | undefined;
+  private resolvedLiveSupplierIds: Readonly<Record<string, ParticipantId>> | undefined;
   private readonly seenKeys = new Set<string>();
   private reported = false;
 
@@ -141,6 +175,7 @@ export class BuyerRunner {
     this.supplierIdForCandidate = options.supplierIdForCandidate;
     this.supplierIdsByDomain = options.supplierIdsByDomain;
     this.runId = options.runId ?? randomUUID();
+    this.live = options.live;
     this.ledger = this.store === undefined ? undefined : new ReportLedger(this.store);
     this.discoveryTimeoutMs = Math.max(
       1,
@@ -163,6 +198,9 @@ export class BuyerRunner {
   async run(): Promise<BuyerOutcome> {
     const startedAtMs = this.clock.now();
     const participantId = await this.ensureRegistered();
+    if (this.live !== undefined) {
+      return this.runLive(participantId, startedAtMs);
+    }
     const request = await this.createRequest();
     this.currentRequestId = request.id;
 
@@ -223,6 +261,185 @@ export class BuyerRunner {
     return this.negotiate(context);
   }
 
+  /**
+   * Live flow: bind a real notice, let the platform collect evidence, have the caller's model
+   * assess it, then trade on the frozen ranking. The platform never ranks by account availability
+   * and this runner never fabricates a candidate.
+   */
+  private async runLive(
+    participantId: ParticipantId,
+    startedAtMs: number,
+  ): Promise<BuyerOutcome> {
+    const live = this.live;
+    if (live === undefined) {
+      throw new Error("runLive requires a live assessment configuration");
+    }
+
+    const request = await this.createRequest(live.buyerNoticeNumber);
+    this.currentRequestId = request.id;
+
+    const { discoveryId } = await this.client.startDiscovery(request.id, {
+      idempotencyKey: `agent-discover-${request.id}`,
+    });
+
+    const evidence = (await this.client.getDiscoveryEvidence(
+      discoveryId,
+    )) as LiveEvidenceView;
+
+    if (evidence.phase === "failed") {
+      return this.finishNoMatch("discovery_failed", describeEvidenceErrors(evidence));
+    }
+    if (evidence.phase !== "awaiting_agent_assessment") {
+      return this.finishNoMatch(
+        "discovery_failed",
+        `discovery is not awaiting a client assessment (phase ${stringValue(evidence.phase)})`,
+      );
+    }
+    if (evidence.selectedBuyerNoticeNumber !== live.buyerNoticeNumber) {
+      return this.finishNoMatch(
+        "discovery_failed",
+        "the platform bound a different buyer notice than the one selected",
+      );
+    }
+
+    const sources = await this.readLiveSources(discoveryId, evidence.sources);
+    const assessment = await live.assess({
+      discoveryId,
+      buyerNoticeNumber: evidence.selectedBuyerNoticeNumber,
+      evidence,
+      sources,
+    });
+
+    // The model's output is data. Never repair it to fit; reject it instead.
+    if (
+      assessment.discoveryId !== discoveryId ||
+      assessment.buyerNoticeNumber !== evidence.selectedBuyerNoticeNumber
+    ) {
+      return this.finishNoMatch(
+        "assessment_rejected",
+        "assessment did not reference this discovery and notice",
+      );
+    }
+
+    let ranking: DiscoveryResult;
+    try {
+      ranking = await this.client.submitDiscoveryAssessment(discoveryId, assessment);
+    } catch (error) {
+      if (isAssessmentRejection(error)) {
+        return this.finishNoMatch(
+          "assessment_rejected",
+          safeErrorMessage(error),
+        );
+      }
+      throw error;
+    }
+
+    this.resolvedLiveSupplierIds = await this.resolveLiveParticipants(discoveryId);
+
+    // The platform quotes only fully eligible candidates (eligible "yes"); a conditional one has
+    // an unevidenced requirement and would be refused with QUALIFYING_CANDIDATE_REQUIRED.
+    const candidates = rankEligibleCandidates(ranking.candidates)
+      .filter((candidate) => candidate.eligible === "yes")
+      .slice(0, this.maxCandidates);
+    if (candidates.length === 0) {
+      return this.finishNoMatch(
+        "no_candidates",
+        ranking.candidates.some((candidate) => candidate.eligible === "conditional")
+          ? "no ranked candidate met every mandatory requirement; conditional candidates cannot be quoted"
+          : "the frozen ranking contained no eligible candidate",
+      );
+    }
+
+    const supplierId = await this.selectSupplier(request.id, candidates);
+    if (supplierId === undefined) {
+      return this.finishNoMatch(
+        "no_connected_supplier",
+        "no fully eligible ranked candidate could be quoted: none is connected, or the ranking is older than the platform quote window",
+      );
+    }
+
+    const negotiation = new BuyerNegotiation({
+      request,
+      mandate: this.config.buyer,
+      buyerId: participantId,
+      currency: this.config.currency,
+      startedAtMs,
+      limits: {
+        maxRevisions: this.config.negotiationMaxRevisions,
+        deadlineMs: this.config.negotiationDeadlineMs,
+      },
+    });
+
+    return this.negotiate({
+      participantId,
+      supplierId,
+      request,
+      negotiation,
+      handledOfferIds: new Set<string>(),
+      handledOrderIds: new Set<string>(),
+    });
+  }
+
+  /** Read each source within hard caps: 5 sources, 3 pages each, 8,000 characters per page. */
+  private async readLiveSources(
+    discoveryId: string,
+    sources: readonly { id: string; url: string }[],
+  ): Promise<LiveEvidenceSource[]> {
+    const maxSources = Math.min(this.live?.maxSources ?? 5, 5);
+    const maxPages = Math.min(this.live?.maxPagesPerSource ?? 3, 3);
+    const result: LiveEvidenceSource[] = [];
+
+    for (const source of sources.slice(0, maxSources)) {
+      let offset = 0;
+      let text = "";
+      let nextOffset: number | null = 0;
+      let pages = 0;
+
+      while (nextOffset !== null && pages < maxPages) {
+        const page = (await this.client.readDiscoverySource(discoveryId, source.id, {
+          offset,
+          limit: 8_000,
+        })) as { text: string; nextOffset: number | null };
+        text += page.text;
+        nextOffset = page.nextOffset;
+        pages += 1;
+        if (nextOffset !== null) {
+          offset = nextOffset;
+        }
+      }
+
+      result.push({
+        id: source.id,
+        url: source.url,
+        text,
+        truncated: nextOffset !== null,
+      });
+    }
+
+    return result;
+  }
+
+  /** Platform resolution after ranking; unavailable or ambiguous accounts stay external leads. */
+  private async resolveLiveParticipants(
+    discoveryId: string,
+  ): Promise<Readonly<Record<string, ParticipantId>>> {
+    const resolved = (await this.client.resolveDiscoveryParticipants(
+      discoveryId,
+    )) as LiveResolutionView;
+    const byDomain: Record<string, ParticipantId> = {};
+    for (const entry of resolved.resolutions) {
+      if (
+        entry.connected !== true ||
+        entry.participantId === undefined ||
+        entry.eligible !== "yes"
+      ) {
+        continue;
+      }
+      byDomain[normalizeDomain(entry.company.officialDomain)] = entry.participantId;
+    }
+    return byDomain;
+  }
+
   private async ensureRegistered(): Promise<ParticipantId> {
     if (this.participantId !== undefined) {
       return this.participantId;
@@ -252,7 +469,7 @@ export class BuyerRunner {
     }
   }
 
-  private async createRequest(): Promise<SourcingRequest> {
+  private async createRequest(buyerNoticeNumber?: string): Promise<SourcingRequest> {
     const mandate = this.config.buyer;
     const input: Omit<SourcingRequest, "id" | "buyerId"> = {
       category: mandate.category,
@@ -270,6 +487,7 @@ export class BuyerRunner {
         description: requirement.description,
         mandatory: requirement.mandatory,
       })),
+      ...(buyerNoticeNumber === undefined ? {} : { buyerNoticeNumber }),
       demo: true,
     };
     return this.client.createRequest(input, {
@@ -330,7 +548,8 @@ export class BuyerRunner {
         if (
           error instanceof PlatformClientError &&
           (error.code === "NO_CONNECTED_REPRESENTATIVE" ||
-            error.code === "NOT_FOUND")
+            error.code === "NOT_FOUND" ||
+            error.code === "QUALIFYING_CANDIDATE_REQUIRED")
         ) {
           this.logger?.info?.("buyer candidate is not connected; trying next", {
             domain: candidate.candidate.company.officialDomain,
@@ -347,10 +566,14 @@ export class BuyerRunner {
   private resolveSupplierId(
     candidate: RankedCandidate,
   ): ParticipantId | undefined {
+    const domain = normalizeDomain(candidate.candidate.company.officialDomain);
+    if (this.live !== undefined) {
+      // Live mode trusts only the platform's resolution; an operator map never picks a supplier.
+      return this.resolvedLiveSupplierIds?.[domain];
+    }
     if (this.supplierIdForCandidate !== undefined) {
       return this.supplierIdForCandidate(candidate);
     }
-    const domain = normalizeDomain(candidate.candidate.company.officialDomain);
     // MVP_LIMIT: the contract has no candidate -> participant resolution yet, so the
     // operator injects the mapping. Evidence fields (including publicOrganizationId)
     // never choose a quote recipient. Upgrade: a platform resolve call after ranking.
@@ -471,6 +694,26 @@ export class BuyerRunner {
         });
         context.negotiation.recordSubmittedCounter();
       } catch (error) {
+        // The platform enforces the counterparty's mandate too. A counter below a private
+        // supplier floor is refused (POLICY_REFUSAL); if the standing offer was acceptable,
+        // accept it instead of losing the deal. No floor information is revealed.
+        if (isPolicyRefusal(error) && decision.reasons.length === 0) {
+          try {
+            const acceptance = await this.client.acceptOffer(offer.id, {
+              idempotencyKey: `agent-accept-${offer.id}`,
+            });
+            if (acceptance.state === "agreed") {
+              return this.finalizeOrder(context, acceptance.order.id);
+            }
+            return undefined;
+          } catch (acceptError) {
+            const mapped = mapNegotiationError(acceptError);
+            if (mapped !== undefined) {
+              return this.finishNoMatch(mapped, safeErrorMessage(acceptError));
+            }
+            throw acceptError;
+          }
+        }
         const mapped = mapNegotiationError(error);
         if (mapped !== undefined) {
           return this.finishNoMatch(mapped, safeErrorMessage(error));
@@ -710,6 +953,54 @@ function rankEligibleCandidates(
     .filter((candidate) => candidate.eligible !== "no")
     .slice()
     .sort((left, right) => left.rank - right.rank);
+}
+
+interface LiveEvidenceView {
+  phase: string;
+  selectedBuyerNoticeNumber: string;
+  sources: { id: string; url: string }[];
+  sourceErrors: { url: string; message: string }[];
+}
+
+interface LiveResolutionView {
+  resolutions: {
+    company: { officialDomain: string };
+    eligible: "yes" | "conditional" | "no";
+    connected: boolean;
+    participantId?: string;
+  }[];
+}
+
+function describeEvidenceErrors(view: LiveEvidenceView): string {
+  if (view.sourceErrors.length === 0) {
+    return "live collection failed without a source error";
+  }
+  return view.sourceErrors
+    .map((sourceError) => `${sourceError.url}: ${sourceError.message}`)
+    .join("; ");
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" && value.trim() !== "" ? value : "unknown";
+}
+
+/** The platform refused an offer as outside a mandate. Other 403s (scope, expiry) are not this. */
+function isPolicyRefusal(error: unknown): boolean {
+  return error instanceof PlatformClientError && error.code === "POLICY_REFUSAL";
+}
+
+/** Only a platform rejection of this assessment maps to a no-match; transport errors rethrow. */
+function isAssessmentRejection(error: unknown): boolean {
+  if (!(error instanceof PlatformClientError)) {
+    return false;
+  }
+  return (
+    error.code === "INVALID_ASSESSMENT" ||
+    error.code === "RANKING_REQUIRED" ||
+    error.status === 400 ||
+    error.status === 409 ||
+    error.status === 422
+  );
 }
 
 function describeSourceErrors(result: DiscoveryResult): string {
