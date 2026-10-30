@@ -64,6 +64,9 @@ test("configured aliases and authenticated MCP initialize share the low-level li
   assert.equal(llmsResponse.status, 200);
   const [liveGuide, llmsGuide] = await Promise.all([agentResponse.text(), llmsResponse.text()]);
   assert.equal(liveGuide, llmsGuide);
+  assert.ok(liveGuide.includes("Mcp-Session-Id"), "automatic onboarding must explain the server-issued session");
+  assert.ok(liveGuide.includes("without an Authorization header"), "a new demo must not require a pre-issued token");
+  assert.doesNotMatch(liveGuide, /Connect to POST \/mcp with your own operator-provisioned bearer token/);
 
   for (const phrase of [
     "tools/list",

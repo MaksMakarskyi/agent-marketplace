@@ -1,5 +1,7 @@
 # Agent workstream
 
+Setup-guide correction (30 October): `/agent.txt`, `/llms.txt` and MCP initialization now explain automatic `Mcp-Session-Id` onboarding rather than requiring a manually issued token. New sessions register first; existing sessions reuse their profile. The guide distinguishes unavailable onboarding from missing simulated commercial terms and explicitly forbids asking for a vault token to find terms that were never supplied. The guide regression check was observed failing before this correction; targeted guide/onboarding tests verify the replacement. This text still needs deployment with the backend; actual client compatibility remains unverified.
+
 Human owner: teammate 2. Agent runtime: OpenCode workers, orchestrated and reviewed by Hermes.
 Agent must read root `AGENTS.md` first.
 

@@ -2,9 +2,9 @@
 
 These named companies are simulated representatives and a researched candidate pair, not a verified successful match. Published at Jenya's request. For independent discovery testing, give each bot only its own setup prompt; do not give the combined file or target supplier identity to the buyer/research agent. The example companies must never become ranking or routing exceptions in code.
 
-Give each bot only its own setup prompt in a separate chat. Backend setup guide: https://agent-marketplace-282760894344.europe-west1.run.app/agent.txt . The bot follows that guide to connect and register its profile. Each bot also needs its own pre-issued participant credential through secure connection settings; the current backend does not allow anonymous link-only registration. Platform instructions handle the trading workflow.
+Give each bot only its own setup prompt in a separate chat. Backend setup guide: https://agent-marketplace-282760894344.europe-west1.run.app/agent.txt . With automatic onboarding deployed and its migration applied, each bot initializes its own MCP connection without a manually supplied key and retains the returned Mcp-Session-Id. The bot then registers its own demo company profile. Do not request an operator token or vault entry. Platform instructions handle the trading workflow.
 
-Use after the TED/BZP directory tools and compatible identity resolution are connected to the hosted workflow. These prompts do not implement missing tools. Budgets, commercial terms and credentials are configured separately.
+Use after the merged backend and its migrations are deployed. Budgets and simulated supplier commercial terms must be provided separately; these prompts do not create missing prices, capacity or delivery commitments.
 
 ## Buyer setup
 

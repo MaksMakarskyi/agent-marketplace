@@ -29,7 +29,7 @@ There is no backend LLM making commercial decisions. Connected clients use their
 
 ## How the intended flow works
 
-1. **Prepare access.** An operator provisions a separate scoped credential and permission ceiling for each participant. Stripe test payment setup is also operator-owned. A company name or public URL is not authorization.
+1. **Connect.** Each demo bot initializes its own MCP session without a manually supplied key. The server issues an `Mcp-Session-Id`, creates demo access during registration within server-held ceilings, and attempts saved Stripe test-card setup for buyers. This simulates a company; it does not establish authority to bind it.
 2. **Register the company.** Each bot reads the setup guide, connects to `/mcp`, and checks its participant record. It registers its demo identity and mandate only if not already registered. Existing registration is immutable; a later prompt cannot casually rewrite it.
 3. **Start with a buying need.** The buyer asks for an item, quantity, destination and deadline within its registered budget. The supplier bot remains active to receive and answer requests.
 4. **Retrieve public records.** The client's model chooses category/CPV, keywords and dates. The intended lean path queries TED supplier-award records and Polish BZP buyer notices during the run, preserving references and provenance.
@@ -75,7 +75,7 @@ The Polish directory path cross-references source-reported Polish identifiers wi
 
 ## Bot setup and permissions
 
-Use the [short prompts](docs/agent-marketplace-demo-prompts.md), then configure each bot's credential through its supported secure connection settings. The setup link describes the protocol; it does not grant anonymous registration or supply credentials.
+Use the [short prompts](docs/agent-marketplace-demo-prompts.md) and the setup link. With automatic onboarding enabled and its migration applied, the bot initializes without an Authorization header and its MCP client retains the returned session header. No manually entered API key or vault token is needed. Existing operator-issued bearer credentials remain supported for legacy connections.
 
 Buyer and supplier need separate chats, identities and private limits. Actual client/product compatibility must be tested: a link alone does not install an adapter, keep a bot running, or enable proactive messages. The supplier needs a listener or event-polling loop throughout negotiation and payment updates.
 
@@ -83,7 +83,7 @@ No frontend or human confirmation button is required in the trading path. Humans
 
 ## Sandbox payment and confirmation
 
-The buyer initiates settlement after agreement. The backend derives the amount from the accepted offer and uses an operator-provisioned saved Stripe test payment method. Bots never receive raw card details or Stripe secrets. Persistent payment state and idempotency keys coordinate retries.
+The buyer initiates settlement after agreement. The backend derives the amount from the accepted offer and uses a saved Stripe test payment method, created during automatic onboarding or provisioned by the operator. Registration can succeed even if test-card setup fails; settlement must then report the missing configuration. Bots never receive raw card details or Stripe secrets. Persistent payment state and idempotency keys coordinate retries.
 
 The bot reports success only after reading `paymentStatus: succeeded` and its actual `sandboxPaymentId`. Pending, failed and requires-action are different outcomes. The current order includes a demo document and payment reference, not a public Stripe-hosted receipt URL. An authorized operator can inspect the payment in the correct Stripe sandbox dashboard.
 
