@@ -128,6 +128,11 @@ export class PlatformClient {
     return this.send("POST", path, body, stableKey("searchBuyerNotices", path, body));
   }
 
+  async searchPublicBuyerNotices(input: { cpvCode?: string; keywords?: string; publishedFrom?: string; publishedTo?: string; limit?: number }): Promise<unknown> {
+    const path = "/v1/sources/public-buyer-notices/search";
+    return this.send("POST", path, input, stableKey("searchPublicBuyerNotices", path, input));
+  }
+
   async getDiscoveryEvidence(discoveryId: string): Promise<unknown> {
     return this.send("GET", `/v1/discoveries/${encodeURIComponent(discoveryId)}/evidence`);
   }

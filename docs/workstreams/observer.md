@@ -1,47 +1,52 @@
-# Observer dashboard workstream
+# Observer workstream
 
-Owner: dashboard developer. Scope: one read-only observer page and its presentation/deployment, per
-[the three-minute demo handoff](../handoffs/2026-10-30-three-minute-demo.md). Not a trading UI.
+Owner: dashboard contributor with platform support. The observer is a read-only display of the
+backend's current run state; it never starts or changes a transaction.
 
-## Works now (local fixture)
+## Existing authenticated observer
 
-- `dashboard/`: static page deployed to https://agentmarketplace.pages.dev (Cloudflare Pages). Run
-  selector with current/earlier labels and a "new run" banner (no silent switch), header with phase,
-  elapsed and last activity, buyer and supplier lanes from server traces, observed client vs
-  configured name, sources with retrieval receipts, frozen comparison, representative lookup after
-  ranking, offers/acceptances, order and payment. Desktop, projector and phone layouts; light and
-  dark.
-- Backend piece, reviewed and integrated by the platform owner (see platform.md): `src/platform/observer-runs.ts`,
-  observer routes in `src/platform/http.ts`, migration `20261030170000_observer.sql`, config in
-  `src/server.ts`, operator key command `observer:operator`.
-- `tests/platform/observer-projection.test.ts` (10): paid run with both lanes and observed clients; no private
-  limit, token or payment method in any response; session scoping (other buyer 404, participant
-  token rejected, observer key rejected on participant routes, expiry, POST 405); polling writes
-  nothing; failed and pending payments show no receipt; conditional candidate never quoted;
-  refusal traced with no order; CORS only for configured origins; phase derivation; key command.
-- `tests/platform/support/observer-rehearsal.ts`: local rehearsal server (paid, refused, then a slow live run).
+The page in `dashboard/` is deployed at https://agentmarketplace.pages.dev. It shows a selected
+buyer's run, public-source receipts, comparison, account lookup, offers, acceptance, order and
+authoritative sandbox-payment status. It polls the authenticated API using an operator-issued
+observer key; the live endpoint log uses the separate `OBSERVER_TOKEN`. The two credentials must
+stay private and are never sent to the bots.
 
-Checks (2026-10-30): `npm run check`: typecheck clean; 332 tests, 328 passed, 0 failed, 4
-pre-existing TODO. Browser-checked locally at 1440×900 and 375×812 (no horizontal scroll), light
-and dark, disconnected state, new-run banner, refused run. Evidence class: local fixture only.
+The authenticated projection, one-buyer scope, redaction, expiry, read-only behavior and exact-origin
+CORS have local fixture coverage in `tests/platform/observer-projection.test.ts` and
+`tests/platform/observer.test.ts`. Migrations and several backend operations were exercised locally
+against disposable Postgres/PGlite. That does not verify this observer against the hosted live run.
 
-## Missing / blocked
+## Public demo view
 
-1. Backend review done on `maksym/observer-dashboard-backend` (findings in platform.md). Remaining: merge; operator
-   applies the migration and sets `OBSERVER_ALLOWED_ORIGINS`. Until then the deployed page can only
-   show its connect screen.
-2. The deployed page has not been verified against the actual service (a public page cannot reach a
-   local API). Needs the hosted observer API and an issued observer key.
-3. CPV codes are not recorded by the live discovery pipeline; the page says so. Request: store the
-   query CPV in the evidence bundle (`cpvCodes`) when the structured directory is mounted.
-4. No hosted timing or three-minute rehearsal with both actual bot clients yet.
-5. `docs/STATUS.md` still says the dashboard is not implemented; the integrator updates it after merge.
-6. TED/BZP directory tools and exact identifier resolution are not exposed yet (backend and bot
-   owners). The observer contract they need is in the runbook; the page will not simulate them.
+`src/platform/public-demo-observer.ts` serves a read-only demo view at
+`/v1/demo-observer/runs`, `/v1/demo-observer/runs/{runId}`, and `/v1/demo-observer/activity`.
+The run list shows the latest 20 requests from all registered demo buyers. A detail request resolves
+its buyer from the stored request on the server; the URL cannot select an account. Activity contains
+only recent authenticated buyer/supplier API or MCP actions, projected through an allowlist. It
+omits participant IDs, messages, request bodies, polling, observer/system traffic and Stripe
+webhooks. This route never grants trade or payment access.
 
-## Next step
+Public view is enabled by default on this demo platform and accepts GET only. It can be disabled with
+`PUBLIC_DEMO_OBSERVER=false`. If no browser origins are configured, CORS permits the Pages dashboard
+origin only. The existing keyed observer and separate global WebSocket token are unchanged.
 
-Hosted connection steps 1–6 in [the runbook](../observer-runbook.md#connecting-the-deployed-dashboard-to-the-hosted-backend)
-(maintainer CI approval, review and merge, migration, deploy with the Pages origin, observer key),
-then verification on the host computer with a real bot-driven run, and the success and refusal
-rehearsals once the buyer and supplier accounts are configured.
+Four isolated local tests pass for visibility across two buyers, server-side run scope, sensitive
+field exclusion, read-only methods, the redacted activity view, Pages CORS and explicit disablement.
+They use the real projection on disposable PGlite and do not establish hosted deployment readiness.
+The owner must still verify the actual frontend against the service and rehearse real bot runs.
+
+The dashboard contributor merged keyless startup through PR #24 (`5077649`) and reports it deployed.
+Its matching backend routes still need deployment; local tests do not prove the hosted connection.
+
+## Remaining acceptance
+
+- Verify that newly created registered demo buyers appear automatically, without operator selection.
+- Review the dashboard and check desktop/mobile, connection loss/retry, and that it shows no
+  credentials or private mandates.
+- Verify exact deployed revisions, environment configuration, and required migrations with the
+  operator. Do not call the demo ready until two real bot clients produce a live run.
+- During rehearsal verify the page reflects agreement, refusal and Stripe's provider-confirmed
+  sandbox result from backend records.
+
+Public directory discovery and the selected case are separate workstreams. The observer must show
+what the backend actually records and must not manufacture sources, candidates, agreement or payment.

@@ -1,18 +1,20 @@
 # Shared project state
 
-Updated 30 October 2026 for the observer stream (#19) and observer dashboard (#18) integration. This describes source code, not a claim of deployed readiness.
+Updated 30 October 2026 for the BZP/TED workflow and public observer integration. This describes the verified source tree, not a claim of deployed readiness. Dashboard main is through PR #24 (`5077649`); the new backend revision still needs publication/deployment.
 
 ## Implemented in code
 
 - Persistent participant-scoped HTTP and 18-tool MCP workflow backed by Postgres, hashed operator-provisioned credentials and bounded mandates.
 - Live public TED buyer retrieval and optional Tavily source reads, discovery-bound client assessments, immutable evidence/ranking, post-ranking domain-based connected-account lookup.
 - Simulated quote/offer exchange, exact-revision acceptances, one order and existing Stripe sandbox settlement/webhook library. Hosted provider confirmation remains unverified.
-- Bounded anonymous TED award-supplier and Polish BZP buyer directory adapters with provenance, ambiguous-identity handling and fixtures. These newer modules are not mounted in HTTP/MCP; directory-compatible identity resolution is still pending.
+- BZP/TED directories are connected through authenticated HTTP/MCP: recent buyer search, actor-bound ten-minute receipts, source-native buyer selection, live re-fetch, Polish identifier checks, TED award leads, bounded winner-specific official-site searches, source-bound client assessments, frozen ranking, exact domain/ID account resolution and existing quote/offer flow. Additive migration `20261030180000_directory_workflow.sql` is required. No registered-account availability enters retrieval or ranking.
 - Shared live agent instructions at `/agent.txt`, `/llms.txt` and live MCP initialization; conservative text when platform wiring is absent.
 - Existing bot runtimes/protocol fixtures and separate-client setup documentation. Their presence does not establish actual Grok/Instinct account compatibility.
-- Observer: a read-only page in `dashboard/` (static, deployed to Cloudflare Pages), its API `GET /v1/observer/runs[/{id}]` authenticated by operator-issued, hashed, expiring observer keys scoped to one demo buyer, bounded server traces per authenticated operation, and the `GET /observer/ws` stream of one human-readable log per endpoint call. Neither the API nor the stream exposes mandates, budgets, credentials or payment methods. Not hosted: the page shows only its connect screen until the steps in task 4 are done.
+- Observer: the keyless page polls public `GET /v1/demo-observer/runs[/{id}]` for all recent demo runs, without buyer selection. `GET /v1/demo-observer/activity` exposes a bounded redacted projection of authenticated bot actions. Pages CORS is allowed by default; private mandates, credentials and payment methods are excluded. Existing keyed observer API and WebSocket remain separate. Backend deployment remains pending.
 
 ## Evidence and limits
+
+Latest integrated local check (30 October, based on main `5077649`): `npm run check` passed typecheck and **371 tests**, with **0 failures, 5 opt-in Postgres skips and 7 existing TODOs**. The new directory workflow passed 12 focused tests. Fresh scoped reviews accepted the public observer and directory integration after fixes for conflicting supplier identities, combined filters and legacy TED compatibility. Native BZP/TED API reads also succeeded, but no hosted bot registration, migration application, matched deal or settlement was performed by this integration run.
 
 The source-adapter revision passed typecheck and 316 fixture tests, with 4 explicit TODOs and no failures/cancellations. Four PR CI groups passed. The final main-compatible instruction revision passed typecheck and 318 tests, with 4 explicit TODOs and no failures/cancellations. Fresh scoped source/integration/instruction reviews returned ship; the documented ingress and hosted acceptance limitations remain. Fresh anonymous adapter reads returned current buyer notices and historical supplier leads; source receipts are in the supplier-data notes. An independent scoped adapter review found no blocker.
 
@@ -20,10 +22,10 @@ Local PGlite/mocked-provider tests do not prove hosted migrations, real concurre
 
 ## Remaining owner tasks
 
-1. Backend/source developer: mount the structured directory path through authenticated tools, coordinate source-native buyer provenance and exact compatible identifiers without fabricated domains, persist evidence and freeze comparison before account lookup. Review ingress deadline/cancellation and remaining deployment configuration.
+1. Backend operator: review/apply `20261030180000_directory_workflow.sql` and deploy the verified backend integration. The current Codex Google Cloud account cannot access project number `282760894344`; deployment needs the existing project owner.
 2. Bot developer: verify actual products/versions and two scoped connections; keep supplier execution active, submit source-bound assessments, read authoritative outcomes and report accurately in each client chat. No email or real-company outreach.
 3. Dashboard developer: the read-only page is implemented ([observer workstream](workstreams/observer.md)). Verify it against the hosted service once task 4 is done, then rehearse the three minutes with both bot clients. Request to the source owner: record the query's `cpvCodes` in the evidence bundle when the structured directory is mounted.
-4. Operator: verify deployed commit/trigger, apply reviewed migrations explicitly (including `20261030170000_observer.sql`), securely provision scoped accounts/mandates and confirm Stripe sandbox/webhook readiness. For the observer, set `OBSERVER_ALLOWED_ORIGINS=https://agentmarketplace.pages.dev` and `OBSERVER_TOKEN` (stream), deploy with `--max-instances=1`, and issue a key with `npm run observer:operator`. No credentials in Git or prompts.
+4. Backend owner: Jenya now requests automatic public demo onboarding, without manually supplied keys. The bots should create their own company profiles and receive automatic session identity. This is a separate pending change; existing participant routes still require their own credentials. Preserve sandbox-only payment and distinct buyer/supplier identities. The public observer needs no observer token, configured buyer or issued read key. Keep one instance if relying on the in-memory activity feed.
 5. Jenya/team: qualify primary/backup scenarios and complete success/refusal rehearsals. The challenge deck requires an autonomous closed deal; a discovery-only visualization does not meet that requirement. Organizer acceptance of sandbox settlement and prior-run receipts remains unconfirmed.
 
 Jev is assessed as an optional relevance/CPV-choice experiment only, not integrated or required. No model call, key access or billing operation was performed by that assessment. See [ADR 0001](architecture/0001-lean-procurement-directory.md), [source evidence](supplier-data-sources.md) and [owner handoffs](handoffs/2026-10-30-integration-owners.md).

@@ -312,6 +312,7 @@ const EXPECTED_TOOLS = [
   "report_pending",
   "get_my_participant",
   "search_buyer_notices",
+  "search_public_buyer_notices",
   "get_discovery_evidence",
   "read_discovery_source",
   "submit_discovery_assessment",

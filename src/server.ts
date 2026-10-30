@@ -9,6 +9,7 @@
  *   OBSERVER_TOKEN          read-only token for the /observer/ws log stream; without it, loopback only
  *   OBSERVER_ALLOWED_ORIGINS comma-separated https origins of the read-only observer page (CORS)
  *   DEPLOYMENT_ENVIRONMENT  label shown on the observer page (default "hosted")
+ *   PUBLIC_DEMO_OBSERVER=false disables the public read-only demo dashboard API (enabled by default)
  */
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -72,6 +73,7 @@ export function buildDependencies(env: NodeJS.ProcessEnv, observer = new Observe
   const deps: Dependencies = { observer, platform: createPlatformHttp(postgresDatabase(pool), market, {
     paymentConfigured: !!settlement && !!webhookSecret,
     observer,
+    publicDemoObserver: { enabled: env.PUBLIC_DEMO_OBSERVER !== "false" },
     observerApi: { allowedOrigins: observerOrigins(env), environment: env.DEPLOYMENT_ENVIRONMENT ?? "hosted" },
   }) };
   if (settlement && webhookSecret) deps.stripeWebhook = { settlement, secret: webhookSecret };

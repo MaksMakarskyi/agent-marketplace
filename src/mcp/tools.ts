@@ -157,7 +157,7 @@ const registerParticipantSchema: JsonSchema = {
   },
 };
 
-const publicationNumberSchema: JsonSchema = { type: "string", pattern: "^[0-9]{1,7}-(19|20)[0-9]{2}$" };
+const publicationNumberSchema: JsonSchema = { type: "string", pattern: "^(?:[0-9]{1,7}-(?:19|20)[0-9]{2}|bzp:[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12})$" };
 
 const createRequestSchema: JsonSchema = {
   type: "object",
@@ -588,6 +588,30 @@ export const MCP_TOOLS: readonly McpToolDefinition[] = [
     },
     invoke: (backend, token, args) => requireCapability(backend.searchBuyerNotices, "search_buyer_notices")
       .call(backend, token, stringArg(args, "query"), args["limit"] as number | undefined),
+  },
+  {
+    name: "search_public_buyer_notices",
+    description: describe(
+      "Search live Polish BZP buyer notices using a CPV category or plain keywords. The default window is the last seven calendar days; supply publishedFrom and publishedTo to search an older period, up to 365 days. Pick a returned entry ID and pass that exact `bzp:<UUID>` as buyerNoticeNumber to create_request. The platform stores a short-lived receipt for your search and re-fetches the same notice during discovery. Its registered buyer identifier must match the notice. The source reports a public need, not a supplier, price or award.",
+    ),
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: [],
+      properties: {
+        cpvCode: { type: "string", pattern: "^[0-9]{8}(?:-[0-9])?$" },
+        keywords: { type: "string", minLength: 1, maxLength: 120 },
+        publishedFrom: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
+        publishedTo: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
+        limit: { type: "integer", minimum: 1, maximum: 10 },
+      },
+    },
+    invoke: (backend, token, args) => requireCapability(backend.searchPublicBuyerNotices, "search_public_buyer_notices").call(backend, token,
+      { ...(typeof args.cpvCode === "string" ? { cpvCode: args.cpvCode } : {}),
+        ...(typeof args.keywords === "string" ? { keywords: args.keywords } : {}),
+        ...(typeof args.publishedFrom === "string" ? { publishedFrom: args.publishedFrom } : {}),
+        ...(typeof args.publishedTo === "string" ? { publishedTo: args.publishedTo } : {}),
+        ...(typeof args.limit === "number" ? { limit: args.limit } : {}) }),
   },
   {
     name: "get_discovery_evidence",

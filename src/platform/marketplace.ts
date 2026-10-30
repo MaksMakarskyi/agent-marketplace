@@ -4,12 +4,14 @@ import { withPayment, type PaymentStore, type SettlementService } from "../payme
 import { OfferRanker } from "../matching/offers.js";
 import { findTool, validateJsonSchema } from "../mcp/tools.js";
 import { finalizeAgentAssessment } from "../sourcing/assessment.js";
-import { ApiEvidenceCollector, canonicalJson, evidenceForAgent, hashText, isoTimestamp, readEvidenceSource, requestFingerprint, type DiscoveryEvidenceBundle } from "../sourcing/discovery.js";
+import { ApiEvidenceCollector, canonicalJson, evidenceForAgent, hashText, isoTimestamp, normalizePolishNip, readEvidenceSource, requestFingerprint, type DiscoveryEvidenceBundle } from "../sourcing/discovery.js";
+import { ProcurementDirectory, type DirectoryQuery, type DirectoryResult } from "../sourcing/directory.js";
+import { SourceApiError } from "../sourcing/json-api.js";
 import { isRecord } from "../sourcing/search.js";
 import { TedClient } from "../sourcing/ted.js";
 import { PlatformError, type Database } from "./database.js";
 
-export interface MarketplaceOptions { collector?: ApiEvidenceCollector; settlement?: SettlementService; paymentStore?: PaymentStore; now?: () => Date; ted?: TedClient }
+export interface MarketplaceOptions { collector?: ApiEvidenceCollector; settlement?: SettlementService; paymentStore?: PaymentStore; now?: () => Date; ted?: TedClient; directory?: ProcurementDirectory }
 type Row = Record<string, unknown>;
 type Acceptance = { state: "agreed"; order: Order } | { state: "awaiting_counterparty" };
 
@@ -17,9 +19,11 @@ type Acceptance = { state: "agreed"; order: Order } | { state: "awaiting_counter
 export class Marketplace {
   private readonly now: () => Date;
   private readonly collector: ApiEvidenceCollector;
+  private readonly directory: ProcurementDirectory;
   constructor(private readonly db: Database, private readonly options: MarketplaceOptions = {}) {
     this.now = options.now ?? (() => new Date());
-    this.collector = options.collector ?? new ApiEvidenceCollector();
+    this.directory = options.directory ?? new ProcurementDirectory({ now: this.now });
+    this.collector = options.collector ?? new ApiEvidenceCollector({ now: this.now, directory: this.directory });
   }
 
   async mutate<T>(actor: ActorContext, key: string, route: string, input: unknown, action: (db: Queryable) => Promise<T>): Promise<T> {
@@ -53,7 +57,8 @@ export class Marketplace {
     if (!isRecord(input)) throw new PlatformError(400, "INVALID_INPUT");
     const { buyerNoticeNumber, ...rest } = input;
     toolInput("create_request", rest);
-    if (buyerNoticeNumber !== undefined && (typeof buyerNoticeNumber !== "string" || !/^\d{1,7}-(19|20)\d{2}$/.test(buyerNoticeNumber))) throw new PlatformError(400, "INVALID_BUYER_NOTICE");
+    if (buyerNoticeNumber !== undefined && (typeof buyerNoticeNumber !== "string" || !/^\d{1,7}-(19|20)\d{2}$/.test(buyerNoticeNumber) &&
+        !/^bzp:[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(buyerNoticeNumber))) throw new PlatformError(400, "INVALID_BUYER_NOTICE");
     const request = { ...rest, id: crypto.randomUUID(), buyerId: actor.participantId,
       ...(buyerNoticeNumber !== undefined ? { buyerNoticeNumber } : {}) } as unknown as SourcingRequest;
     await requestFingerprint(request);
@@ -91,10 +96,53 @@ export class Marketplace {
     return (this.options.ted ?? new TedClient()).search({ query, limit, scope: "ACTIVE" });
   }
 
+  async searchPublicBuyerNotices(actor: ActorContext, input: { cpvCode?: string; keywords?: string; publishedFrom?: string; publishedTo?: string; limit?: number }): Promise<DirectoryResult & { searchId: string }> {
+    if (actor.role !== "buyer") throw new PlatformError(403, "FORBIDDEN");
+    if (!isRecord(input) || Object.keys(input).some((key) => !["cpvCode", "keywords", "publishedFrom", "publishedTo", "limit"].includes(key)) ||
+        (input.cpvCode === undefined && input.keywords === undefined)) throw new PlatformError(400, "INVALID_DIRECTORY_QUERY");
+    const today = this.now();
+    const to = input.publishedTo ?? today.toISOString().slice(0, 10);
+    const from = input.publishedFrom ?? new Date(today.getTime() - 6 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const fromTime = validDirectoryDate(from) ? Date.parse(`${from}T00:00:00Z`) : NaN;
+    const toTime = validDirectoryDate(to) ? Date.parse(`${to}T00:00:00Z`) : NaN;
+    if (!Number.isFinite(fromTime) || !Number.isFinite(toTime) || fromTime > toTime || toTime - fromTime > 365 * 24 * 60 * 60 * 1000 ||
+        (input.publishedFrom !== undefined && !validDirectoryDate(input.publishedFrom)) || (input.publishedTo !== undefined && !validDirectoryDate(input.publishedTo))) {
+      throw new PlatformError(400, "INVALID_DIRECTORY_QUERY");
+    }
+    const query: DirectoryQuery = { ...(typeof input.cpvCode === "string" ? { cpvCode: input.cpvCode } : {}),
+      ...(typeof input.keywords === "string" ? { keywords: input.keywords } : {}), publishedFrom: from, publishedTo: to,
+      ...(input.limit === undefined ? {} : { limit: input.limit }) };
+    let result: DirectoryResult;
+    try { result = await this.directory.findBuyers(query); }
+    catch (error) {
+      if (error instanceof SourceApiError && error.code === "INVALID_INPUT") throw new PlatformError(400, "INVALID_DIRECTORY_QUERY");
+      throw new PlatformError(503, "PUBLIC_SOURCE_UNAVAILABLE");
+    }
+    const searchId = crypto.randomUUID();
+    const createdAt = this.now();
+    await this.db.transaction(async (tx) => {
+      await tx.query("delete from marketplace.public_directory_searches where expires_at <= $1", [createdAt.toISOString()]);
+      await tx.query(`insert into marketplace.public_directory_searches(id,participant_id,participant_role,filters,result,created_at,expires_at)
+        values($1,$2,$3,$4,$5,$6,$7)`, [searchId, actor.participantId, actor.role, JSON.stringify(query), JSON.stringify(result), createdAt.toISOString(),
+        new Date(createdAt.getTime() + 10 * 60_000).toISOString()]);
+    });
+    return { ...result, searchId };
+  }
+
   async startDiscovery(actor: ActorContext, requestId: string, key: string): Promise<{ discoveryId: string }> {
     buyerOnly(actor);
     const request = await this.readRequest(this.db, actor, requestId);
     if (!request.buyerNoticeNumber) throw new PlatformError(400, "BUYER_NOTICE_REQUIRED", "Select a real buyer notice before discovery");
+    let buyerDirectoryQuery: DirectoryQuery | undefined;
+    if (request.buyerNoticeNumber.startsWith("bzp:")) {
+      const recentSearches = await this.db.query(`select filters,result from marketplace.public_directory_searches
+        where participant_id=$1 and participant_role='buyer' and expires_at>$2 order by created_at desc,id desc limit 10`,
+      [actor.participantId, this.now().toISOString()]);
+      const search = recentSearches.rows.find((row) => isRecord(row.result) && Array.isArray(row.result.entries) &&
+        row.result.entries.some((entry: unknown) => isRecord(entry) && entry.id === request.buyerNoticeNumber));
+      if (!search || !isRecord(search.filters)) throw new PlatformError(409, "BUYER_NOTICE_SOURCE_REQUIRED", "Select a notice from your recent live BZP search");
+      buyerDirectoryQuery = search.filters as unknown as DirectoryQuery;
+    }
     const job = await this.mutate(actor, key, "start_discovery", { requestId }, async (db) => {
       await this.readRequest(db, actor, requestId, true);
       const id = crypto.randomUUID();
@@ -106,7 +154,15 @@ export class Marketplace {
     // MVP_LIMIT: one bounded collection step is awaited in this request, with durable state before I/O.
     // No detached process/in-memory scheduler. A crashed step expires visibly and requires a new run.
     try {
-      const bundle = await this.collector.collect(actor, request, { discoveryId: job.discoveryId, buyerNoticeNumber: request.buyerNoticeNumber });
+      const bundle = await this.collector.collect(actor, request, { discoveryId: job.discoveryId, buyerNoticeNumber: request.buyerNoticeNumber,
+        ...(buyerDirectoryQuery ? { buyerDirectoryQuery } : {}) });
+      if (bundle.directoryContext) {
+        const registeredBuyer = (await this.db.query("select public_org_id from marketplace.participants where id=$1 and role='buyer'", [actor.participantId])).rows[0];
+        const registeredId = typeof registeredBuyer?.public_org_id === "string" ? normalizePolishNip(registeredBuyer.public_org_id) : null;
+        const noticeId = bundle.directoryContext.buyer.company.publicOrganizationId;
+        if (!registeredId || !noticeId || registeredId !== normalizePolishNip(noticeId) ||
+            bundle.directoryContext.buyer.company.country !== "PL") throw new Error("Selected BZP notice does not match the registered buyer's Polish public identifier");
+      }
       await this.db.query("update marketplace.discovery_runs set evidence_bundle=$2,status=$3,completed_at=$4 where id=$1 and status='running' and evidence_bundle is null", [job.discoveryId, JSON.stringify(bundle), bundle.phase === "failed" ? "failed" : "running", bundle.completedAt]);
     } catch {
       await this.db.query("update marketplace.discovery_runs set status='failed',error='Bounded source collection failed',completed_at=$2 where id=$1 and evidence_bundle is null", [job.discoveryId, this.now().toISOString()]);
@@ -164,16 +220,24 @@ export class Marketplace {
     return this.db.transaction(async (db) => {
       const job = await this.job(db, actor, id, true);
       if (job.status !== "complete" || !job.result) throw new PlatformError(409, "RANKING_REQUIRED");
+      const request = await this.readRequest(db, actor, job.request_id as string);
+      const polishDirectory = request.buyerNoticeNumber?.startsWith("bzp:") === true;
       const candidates = (await db.query("select * from marketplace.candidates where discovery_id=$1 order by rank", [id])).rows;
       const resolutions = [];
       for (const candidate of candidates) {
         const prior = (await db.query("select participant_id from marketplace.candidate_accounts where candidate_id=$1", [candidate.id])).rows[0];
         let participantId = prior?.participant_id as string | null | undefined;
         if (!prior) {
-          const matches = (await db.query(`select p.id from marketplace.participants p join marketplace.operator_grants g on g.id=p.grant_id
+          const matches = (await db.query(`select p.id,p.public_org_id from marketplace.participants p join marketplace.operator_grants g on g.id=p.grant_id
             join marketplace.mandates m on m.participant_id=p.id where p.role='supplier' and p.registered_at is not null
-            and p.official_domain=$1 and ($2::text is null or p.public_org_id=$2) and g.expires_at>$3 and m.expires_at>$3`,
-          [candidate.official_domain, candidate.public_org_id, this.now().toISOString()])).rows;
+            and p.official_domain=$1 and ($2::text is null or p.public_org_id=$2 or $4::boolean) and g.expires_at>$3 and m.expires_at>$3`,
+          [candidate.official_domain, candidate.public_org_id, this.now().toISOString(), polishDirectory])).rows.filter((row) => {
+            if (!polishDirectory) return true;
+            if (candidate.public_org_id === null) return false;
+            const candidateNip = normalizePolishNip(String(candidate.public_org_id));
+            const participantNip = typeof row.public_org_id === "string" ? normalizePolishNip(row.public_org_id) : null;
+            return candidateNip !== null && participantNip === candidateNip;
+          });
           // Ambiguous identities are external leads, not an arbitrary connected account.
           participantId = matches.length === 1 ? matches[0]!.id as string : null;
           await db.query("insert into marketplace.candidate_accounts(candidate_id,participant_id) values($1,$2)", [candidate.id, participantId]);
@@ -339,6 +403,11 @@ async function requireOpen(db: Queryable, requestId: string) {
 function buyerOnly(actor: ActorContext) { if (actor.role !== "buyer") throw new PlatformError(403, "FORBIDDEN"); }
 function minor(value: unknown): number { const n = Number(value); if (!Number.isSafeInteger(n)) throw new PlatformError(500, "INVALID_STORED_AMOUNT"); return n; }
 function date(value: unknown): string { return new Date(value as string | Date).toISOString(); }
+function validDirectoryDate(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
 function toolInput(name: string, input: unknown): void {
   const schema = findTool(name)?.inputSchema;
   if (!schema || !validateJsonSchema(schema, input, "input").ok) throw new PlatformError(400, "INVALID_INPUT");

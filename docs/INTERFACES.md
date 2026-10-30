@@ -12,6 +12,10 @@ Source owner supplies `MatchingService.rankEvidence(request, candidates)` and `r
 
 ## Platform to agent clients
 
+Integration update (30 October): `POST /v1/sources/public-buyer-notices/search` and MCP `search_public_buyer_notices` accept CPV and/or keywords plus optional date bounds. The selected `bzp:<UUID>` goes in `create_request.buyerNoticeNumber`; discovery requires the caller's unexpired search receipt and re-fetches the original query. Existing client assessment, ranking, resolution, quote and order tools follow. Apply `20261030180000_directory_workflow.sql` before using this path. Website source IDs and quotations remain backend-bound; a client never supplies trusted source bodies or provenance.
+
+Public observation: `GET /v1/demo-observer/runs`, `GET /v1/demo-observer/runs/{runId}` and `GET /v1/demo-observer/activity` need no credential. The first two reuse the existing observer JSON projection for all registered demo buyers; activity returns `{ activities: [...] }` with role, operation, timestamp and status, excluding message text and secrets. Exact Pages CORS is enabled by default. These read routes grant no transaction authority. Existing participant HTTP/MCP still requires credentials until the separate automatic-onboarding change lands.
+
 Agent owner exposes tool calls for the HTTP equivalents of `PlatformService`: registration, requests, discovery, quote requests, offers, acceptance, settlement, order status, and authorized events. No business logic is duplicated in an MCP adapter.
 
 Credentials map to trusted `ActorContext` on the server. Ignore/reject client-supplied actor IDs as authority. Operator grants bound registration mandates. Money uses integer minor units; every offer has one currency and an immutable offer ID. Validate quantities, deadlines, ownership, policies, and every required field at runtime.

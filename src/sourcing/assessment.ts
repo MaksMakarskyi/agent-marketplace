@@ -1,7 +1,8 @@
 import type { ActorContext, Candidate, DiscoveryResult, SourcingRequest } from "../contracts.js";
 import { EvidenceRanker } from "../matching/evidence.js";
-import { boundedText, DiscoveryInputError, validateBundle, type DiscoveryEvidenceBundle } from "./discovery.js";
+import { boundedText, DiscoveryInputError, normalizePolishNip, validateBundle, type DiscoveryEvidenceBundle } from "./discovery.js";
 import { isRecord, normalizeSourceUrl } from "./search.js";
+import type { DirectoryEntry } from "./directory.js";
 
 export interface AgentClaimAssessment {
   requirementKey: string;
@@ -63,10 +64,15 @@ export async function finalizeAgentAssessment(actor: ActorContext, request: Sour
     if (publicId !== undefined && (!boundedText(publicId, 200) || !boundedText(raw.identity.organizationIdQuotation, 4000) ||
         !identitySource.text.includes(raw.identity.organizationIdQuotation) || !raw.identity.organizationIdQuotation.includes(publicId) ||
         !raw.identity.organizationIdQuotation.toLowerCase().includes(companyName.toLowerCase()))) invalidAssessment();
+    let normalizedPublicId = publicId;
+    if (bundle.directoryContext) {
+      normalizedPublicId = publicId === undefined ? undefined : normalizePolishNip(publicId) ?? undefined;
+      if (!normalizedPublicId || !raw.identity.organizationIdQuotation || !hasUniqueAwardIdentity(bundle.directoryContext.suppliers, normalizedPublicId)) invalidAssessment();
+    }
     if (identities.has(domain)) invalidAssessment();
     identities.add(domain);
     const candidate: Candidate = { company: { name: companyName, officialDomain: domain,
-      ...(publicId !== undefined ? { publicOrganizationId: publicId } : {}) }, claims: [] };
+      ...(normalizedPublicId !== undefined ? { publicOrganizationId: normalizedPublicId } : {}) }, claims: [] };
     for (const claim of raw.claims) {
       if (!shape(claim, ["requirementKey", "outcome", "sourceId", "quotation"]) || !boundedText(claim.requirementKey, 100) ||
           !["match", "mismatch", "unknown"].includes(claim.outcome as string)) invalidAssessment();
@@ -96,6 +102,15 @@ export async function finalizeAgentAssessment(actor: ActorContext, request: Sour
     sources: bundle.sources, companies: candidates.map((candidate) => candidate.company) }, { now: () => now });
   return { selectedBuyerNoticeNumber: bundle.selectedBuyerNoticeNumber, assessmentOrigin: "client-agent",
     result: { id: bundle.id, requestId: request.id, status: "complete", candidates: ranker.rankEvidence(request, candidates), sourceErrors } };
+}
+
+function hasUniqueAwardIdentity(suppliers: DirectoryEntry[], publicId: string): boolean {
+  // TED's country-specific winner identifier is the public cross-reference; candidate sites must
+  // independently quote the same identifier on their official domain before ranking/resolution.
+  const records = suppliers.filter((entry) => entry.company.publicOrganizationId !== null &&
+    entry.company.country === "POL" && normalizePolishNip(entry.company.publicOrganizationId) === publicId);
+  const names = new Set(records.map((entry) => entry.company.name.normalize("NFC").replace(/\s+/g, " ").trim().toLowerCase()));
+  return records.length > 0 && names.size === 1;
 }
 
 function invalidAssessment(): never {

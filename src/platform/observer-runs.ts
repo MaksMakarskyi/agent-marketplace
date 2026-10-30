@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Queryable } from "../payments/postgres-store.js";
 import { PlatformError } from "./database.js";
+import type { ObserverLog, ObserverBus } from "./observer.js";
 
 /**
  * Read-only observer for the live demo.
@@ -19,7 +20,7 @@ export interface ObserverSession {
   id: string;
   buyerParticipantId: string;
   label: string;
-  expiresAt: string;
+  expiresAt: string | null;
 }
 
 export type TraceChannel = "mcp" | "http";
@@ -225,6 +226,24 @@ export async function listRuns(db: Queryable, session: ObserverSession): Promise
       where r.buyer_id = $1
       order by r.created_at desc, r.id desc
       limit ${MAX_RUNS}`, [session.buyerParticipantId])).rows;
+  return runSummaries(db, rows, publicSession(session));
+}
+
+/** Public rehearsal view: show recent requests from every registered demo buyer. */
+export async function listDemoRuns(db: Queryable): Promise<unknown> {
+  const rows = (await db.query(
+    `select r.id, r.created_at, r.status, r.description, r.buyer_notice_number,
+            (select max(t.finished_at) from marketplace.agent_traces t where t.request_id = r.id) as last_activity_at
+       from marketplace.sourcing_requests r
+       join marketplace.participants p on p.id = r.buyer_id and p.role = 'buyer' and p.demo = true and p.registered_at is not null
+       join marketplace.operator_grants g on g.id = p.grant_id and g.role = 'buyer' and g.demo = true
+      where r.demo = true
+      order by r.created_at desc, r.id desc
+      limit ${MAX_RUNS}`)).rows;
+  return runSummaries(db, rows, { label: "Public demo", expiresAt: null });
+}
+
+async function runSummaries(db: Queryable, rows: Record<string, unknown>[], session: { label: string; expiresAt: string | null }) {
   const runs = [];
   for (const row of rows) {
     const facts = await phaseFacts(db, String(row.id), String(row.status));
@@ -233,7 +252,53 @@ export async function listRuns(db: Queryable, session: ObserverSession): Promise
       description: clip(String(row.description), 140), buyerNoticeNumber: row.buyer_notice_number ?? null,
       phase, terminal: TERMINAL.has(phase) });
   }
-  return { session: publicSession(session), runs };
+  return { session, runs };
+}
+
+/** Public activity is an explicit allowlist projection of authenticated bot calls only. */
+export function publicActivity(bus?: ObserverBus): { activities: PublicActivity[] } {
+  const activities = (bus?.recent() ?? []).filter(isPublicActorLog)
+    .filter((entry) => !["get_my_participant", "list_events"].includes(entry.operation))
+    .slice(-200).map((entry) => ({
+      id: entry.id,
+      at: entry.at,
+      source: entry.source,
+      role: entry.actor!.role,
+      operation: entry.operation,
+      status: entry.status,
+      outcome: entry.outcome,
+      ...(entry.code ? { code: entry.code } : {}),
+      durationMs: entry.durationMs,
+      ...(safeActivityId(entry.subject?.requestId) ? { requestId: entry.subject!.requestId } : {}),
+      ...(safeActivityId(entry.subject?.offerId) ? { offerId: entry.subject!.offerId } : {}),
+      ...(safeActivityId(entry.subject?.orderId) ? { orderId: entry.subject!.orderId } : {}),
+      ...(safeActivityId(entry.subject?.discoveryId) ? { discoveryId: entry.subject!.discoveryId } : {}),
+    }));
+  return { activities };
+}
+
+function isPublicActorLog(entry: ObserverLog): entry is ObserverLog & { source: "http" | "mcp"; actor: NonNullable<ObserverLog["actor"]> } {
+  return entry.actor !== undefined && (entry.source === "http" || entry.source === "mcp");
+}
+
+export interface PublicActivity {
+  id: string;
+  at: string;
+  source: "http" | "mcp";
+  role: "buyer" | "supplier";
+  operation: string;
+  status: number;
+  outcome: "ok" | "refused" | "error";
+  code?: string;
+  durationMs: number;
+  requestId?: string;
+  offerId?: string;
+  orderId?: string;
+  discoveryId?: string;
+}
+
+function safeActivityId(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9:_-]{1,128}$/.test(value);
 }
 
 async function phaseFacts(db: Queryable, requestId: string, requestStatus: string): Promise<PhaseFacts> {
@@ -415,12 +480,27 @@ function discoveryView(row: Record<string, unknown>) {
       provider: hostname(str(api.url)), providerResponseHash: str(api.contentHash), providerRetrievedAt: str(api.retrievedAt),
     };
   }) : [];
+  const directory = isRecord(bundle?.directoryContext) ? bundle.directoryContext : undefined;
+  // API receipts are distinct from extracted websites. Never invent a website-fetch timestamp.
+  for (const [kind, receipt] of [["buyer", directory?.buyerSource], ["supplier", directory?.supplierSource]] as const) {
+    if (!isRecord(receipt)) continue;
+    sources.push({ id: `${str(row.id)}:${kind}-directory`, url: str(receipt.url), retrievedAt: str(receipt.retrievedAt),
+      contentHash: str(receipt.contentHash), characters: 0, provider: hostname(str(receipt.url)),
+      providerResponseHash: str(receipt.contentHash), providerRetrievedAt: str(receipt.retrievedAt) });
+  }
   const notices = Array.isArray(bundle?.buyerNotices) ? bundle.buyerNotices.filter(isRecord).map((notice) => ({
     publicationNumber: str(notice.publicationNumber), noticeUrl: str(notice.noticeUrl), publishedOn: str(notice.publishedOn),
     noticeType: notice.noticeType ?? null, title: clip(firstText(notice.titles), 240), buyerName: firstName(notice.buyerNames),
     ...(isRecord(notice.evidence) ? { retrievedAt: str(notice.evidence.retrievedAt), responseHash: str(notice.evidence.contentHash),
       provider: hostname(str(notice.evidence.url)) } : {}),
   })) : [];
+  if (directory && isRecord(directory.buyer)) {
+    const buyer = directory.buyer, notice = isRecord(buyer.notice) ? buyer.notice : {}, company = isRecord(buyer.company) ? buyer.company : {};
+    const receipt = isRecord(directory.buyerSource) ? directory.buyerSource : {};
+    notices.push({ publicationNumber: str(notice.reference), noticeUrl: str(notice.url), publishedOn: str(notice.publishedOn),
+      noticeType: "published-buyer-need", title: clip(str(buyer.description), 240), buyerName: str(company.name),
+      retrievedAt: str(receipt.retrievedAt), responseHash: str(receipt.contentHash), provider: hostname(str(receipt.url)) });
+  }
   const sourceErrors = [
     ...(Array.isArray(bundle?.sourceErrors) ? bundle.sourceErrors : []),
     ...(Array.isArray(result?.sourceErrors) ? result.sourceErrors : []),
@@ -445,8 +525,9 @@ function discoveryView(row: Record<string, unknown>) {
     collection: bundle ? {
       phase: str(bundle.phase), startedAt: str(bundle.startedAt), completedAt: str(bundle.completedAt),
       selectedBuyerNoticeNumber: str(bundle.selectedBuyerNoticeNumber), supplierQuery: clip(str(bundle.supplierQuery), 400),
-      // The live discovery pipeline does not record CPV codes yet; null is "not recorded", never "none".
-      cpvCodes: Array.isArray(bundle.cpvCodes) ? bundle.cpvCodes.filter((code): code is string => typeof code === "string").slice(0, 20) : null,
+      cpvCodes: Array.isArray(bundle.cpvCodes) ? bundle.cpvCodes.filter((code): code is string => typeof code === "string").slice(0, 20)
+        : directory && isRecord(directory.buyer) && Array.isArray(directory.buyer.cpvCodes)
+          ? directory.buyer.cpvCodes.filter((code): code is string => typeof code === "string").slice(0, 20) : null,
       notices, sources, sourceErrors, returnedCount: sources.length, failedCount: sourceErrors.length,
     } : null,
     ranking: result ? { status: str(result.status), candidates } : null,

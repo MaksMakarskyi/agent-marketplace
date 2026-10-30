@@ -2,7 +2,7 @@
 
 A marketplace backend that lets independently operated buyer and supplier agents discover opportunities, exchange offers, agree within defined limits, and settle demo orders through Stripe sandbox. People use their existing bots; a separate observer page can show the run.
 
-**This is a hackathon simulation using real public procurement data.** The code is not proof of a completed live transaction. The latest merged directory adapters still need connecting to the authenticated platform and bot tools. Actual two-client compatibility, the selected demo pair, and provider-confirmed hosted settlement need rehearsal.
+**This is a hackathon simulation using real public procurement data.** The code connects BZP buyer notices, TED supplier history, live official-site evidence and client-agent assessments to the transaction workflow. Deployment, actual two-client compatibility, the selected demo pair, and provider-confirmed hosted settlement still need verification.
 
 ## Links and starting points
 
@@ -17,7 +17,7 @@ A marketplace backend that lets independently operated buyer and supplier agents
 | Current evidence and blockers | [Shared status](docs/STATUS.md) and [workstream status](docs/workstreams/) |
 | Engineering instructions | [AGENTS.md](AGENTS.md), [interfaces](docs/INTERFACES.md), [full brief](TEAM_BRIEF.md) |
 
-The setup guide was reachable when checked on 30 October 2026. That does not establish deployed feature readiness. The observer contributor reports a live page tested against a local fixture; its backend proposal is [PR #18](https://github.com/MaksMakarskyi/agent-marketplace/pull/18), not part of the inspected main revision. Check the deployed revision, actual MCP tool list, and PR status before a rehearsal.
+The setup guide and backend were reachable on 30 October 2026. The keyless observer page is merged through PR #24. Its public backend routes are part of the directory/observer integration and must be deployed before the page receives data. Check the deployed revision and actual MCP tool list before a rehearsal.
 
 ## Why this exists
 
@@ -58,7 +58,7 @@ Two paths exist. Do not silently substitute one for the other.
 
 | Path | Implementation | Current boundary |
 | --- | --- | --- |
-| **Lean structured directory, intended first demo** | `src/sourcing/directory.ts`: anonymous TED historical supplier leads and BZP buyer notices, with CPV/keyword/date filters | Adapters and live-read evidence exist. HTTP/MCP mounting, compatible identity handling and the directory comparison boundary still need integration. |
+| **Polish directory workflow, intended first demo** | `search_public_buyer_notices` returns live BZP notices with actor-bound, short-lived search receipts. Discovery re-fetches the selected notice, checks its buyer identifier, collects TED award leads and live official-site evidence, then awaits the client's assessment. | Requires the directory migration and a deployed integration revision. Historical awards do not establish current terms; the selected pair is not guaranteed to match. |
 | **Richer source-assessment workflow** | TED buyer retrieval, optional Tavily search/extraction, source reads, client-agent assessments, evidence ranking and account lookup | Existing platform/MCP code exposes this workflow when configured. It is separate from directory mode and does not establish named-bot or hosted-payment acceptance. |
 
 The lean adapter retrieves one bounded page, at most ten notices per call. It preserves provider order and does not score supplier suitability. CPV is category evidence, not a product-conformity certificate; current format validation is not an authoritative vocabulary lookup. See [ADR 0001](docs/architecture/0001-lean-procurement-directory.md) and [source evidence](docs/supplier-data-sources.md).
@@ -71,7 +71,7 @@ The offer comparator filters quantity, unit, destination, currency, budget, dead
 
 The existing `Marketplace.resolve` uses an exact normalized official domain and, if supplied by the candidate, an exact public organization ID. It returns an internal participant ID only for one matching registered supplier with current grants and mandates. Public IDs are never used directly as participant IDs.
 
-Structured TED/BZP records can lack a domain or a verified identifier scheme. **Identifier-only directory resolution is not implemented in this main revision.** Backend and bot owners must connect that path using compatible country/identifier semantics. Do not fabricate domains, use fuzzy names as routing authority, or force a prepared company to win. This gap is recorded in [backend issue #11](https://github.com/MaksMakarskyi/agent-marketplace/issues/11) and [agent issue #13](https://github.com/MaksMakarskyi/agent-marketplace/issues/13).
+The Polish directory path cross-references source-reported Polish identifiers with official-site identity quotations, then uses the existing exact official-domain and public-ID account lookup. It does not route by fuzzy company names or invent missing domains. Identifier-only routing and arbitrary international identity schemes remain outside this MVP. Missing or ambiguous evidence must stop the match.
 
 ## Bot setup and permissions
 
@@ -93,9 +93,9 @@ Mocked provider responses do not prove hosted settlement. The demo needs an actu
 
 The dashboard is a read-only presentation surface for source provenance, comparison, representative lookup, acceptances, order and payment status. It must not initiate trades or expose participant write credentials and private limits.
 
-Main includes the human-readable endpoint log stream from [PR #19](https://github.com/MaksMakarskyi/agent-marketplace/pull/19). See [observer stream documentation](docs/observer-stream.md). It is distinct from the selected-run observer projection proposed in [dashboard PR #18](https://github.com/MaksMakarskyi/agent-marketplace/pull/18). Do not assume their tokens, protocols or scopes are interchangeable.
+The default dashboard polls public, read-only `/v1/demo-observer/runs` and `/v1/demo-observer/runs/{runId}`. It automatically lists the latest 20 requests across registered demo buyers; there is no selected buyer or observer key. `/v1/demo-observer/activity` supplies recent redacted bot actions, including registration before the first request. Activity is instance-local and resets on restart. Private budgets, credentials and payment methods are excluded. Set `PUBLIC_DEMO_OBSERVER=false` to disable the public view.
 
-Hosted dashboard integration still requires backend review, migration/configuration where applicable, authorized origin and appropriate read-only access. A reachable page or moving fixture events do not establish a successful real bot run.
+The existing private observer API and token-protected WebSocket remain separate. Public routes allow the Pages dashboard origin by default and require the observer database migration. The new backend revision must be deployed before the live page receives data. A reachable page or moving fixture events do not establish a successful real bot run.
 
 ## Developer setup
 

@@ -24,6 +24,7 @@ export interface PlatformToolClient {
   getDiscovery(discoveryId: string): Promise<DiscoveryResult>;
   getMyParticipant?(): Promise<unknown>;
   searchBuyerNotices?(query: string, limit?: number): Promise<unknown>;
+  searchPublicBuyerNotices?(input: { cpvCode?: string; keywords?: string; publishedFrom?: string; publishedTo?: string; limit?: number }): Promise<unknown>;
   getDiscoveryEvidence?(discoveryId: string): Promise<unknown>;
   readDiscoverySource?(discoveryId: string, sourceId: string, options?: { offset?: number; limit?: number }): Promise<unknown>;
   submitDiscoveryAssessment?(discoveryId: string, assessment: AgentAssessment): Promise<DiscoveryResult>;
@@ -77,6 +78,10 @@ export function createMcpBackend(options: McpBackendOptions): McpToolBackend {
     searchBuyerNotices: async (token, query, limit) => {
       const client = clientForToken(token);
       return requireCapability(client.searchBuyerNotices, "search_buyer_notices").call(client, query, limit);
+    },
+    searchPublicBuyerNotices: async (token, input) => {
+      const client = clientForToken(token);
+      return requireCapability(client.searchPublicBuyerNotices, "search_public_buyer_notices").call(client, input);
     },
     getDiscoveryEvidence: async (token, discoveryId) => {
       const client = clientForToken(token);

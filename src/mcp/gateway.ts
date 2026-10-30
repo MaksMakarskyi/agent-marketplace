@@ -24,6 +24,7 @@ export interface McpToolBackend {
   getDiscovery(token: string, discoveryId: string): Promise<DiscoveryResult>;
   getMyParticipant?(token: string): Promise<unknown>;
   searchBuyerNotices?(token: string, query: string, limit?: number): Promise<unknown>;
+  searchPublicBuyerNotices?(token: string, input: { cpvCode?: string; keywords?: string; publishedFrom?: string; publishedTo?: string; limit?: number }): Promise<unknown>;
   getDiscoveryEvidence?(token: string, discoveryId: string): Promise<unknown>;
   readDiscoverySource?(token: string, discoveryId: string, sourceId: string, options?: { offset?: number; limit?: number }): Promise<unknown>;
   submitDiscoveryAssessment?(token: string, discoveryId: string, assessment: AgentAssessment): Promise<DiscoveryResult>;
