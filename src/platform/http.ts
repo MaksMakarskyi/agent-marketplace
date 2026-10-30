@@ -11,6 +11,7 @@ import { PlatformError, type Database } from "./database.js";
 import { Marketplace } from "./marketplace.js";
 import { observe, type ObserverBus } from "./observer.js";
 import { createPublicDemoObserver } from "./public-demo-observer.js";
+import { DEFAULT_POLICY, SESSION_HEADER, onboard, openSession, sessionState, type OnboardingOptions } from "./onboarding.js";
 import { authenticateObserver, errorCodeFrom, idsFromResponse, listRuns, mcpClientInfo, operationFor, recordSighting, recordTrace,
   runView, touchSighting, type TraceChannel } from "./observer-runs.js";
 
@@ -26,6 +27,8 @@ export interface PlatformHttpOptions {
   observer?: ObserverBus;
   /** Public read-only visibility of demo runs. Participant trading credentials remain private. */
   publicDemoObserver?: { enabled?: boolean };
+  /** Automatic demo onboarding over MCP sessions; absent means bearer tokens only. */
+  onboarding?: OnboardingOptions;
   /** The read-only observer page API under /v1/observer. */
   observerApi?: {
     /** Exact browser origins allowed to read the observer projection (CORS). Empty: same-origin only. */
@@ -79,6 +82,7 @@ export function createPlatformHttp(db: Database, market: Marketplace, options: P
       const url = new URL(observed.url);
       if (url.pathname.startsWith("/v1/demo-observer/")) return { response: await publicDemoObserver(observed) };
       if (url.pathname === "/v1/observer" || url.pathname.startsWith("/v1/observer/")) return { response: await observerApi(observed) };
+      if (options.onboarding && url.pathname === "/mcp" && !observed.headers.get("authorization")) return onboardingMcp(observed, options.onboarding);
       const startedAt = now();
       const context: DispatchContext = {};
       const response = await dispatch(observed, context);
@@ -128,6 +132,64 @@ export function createPlatformHttp(db: Database, market: Marketplace, options: P
         ...(errorCode === undefined ? {} : { errorCode }), ...match.ids, ...created, startedAt, finishedAt });
     } catch {
       // A missing migration or a trace failure must not fail or alter the participant's operation.
+    }
+  }
+
+  /**
+   * MCP without a bearer token: the server-issued Mcp-Session-Id is the identity. Unknown sessions get 404,
+   * which tells a Streamable HTTP client to initialize again. Pending sessions may only initialize, list
+   * tools and register; registered sessions use the normal authenticated path with the session as bearer.
+   */
+  async function onboardingMcp(request: Request, onboarding: OnboardingOptions): Promise<{ response: Response; actor?: ActorContext | undefined }> {
+    if (request.method !== "POST") return { response: methodNotAllowed("POST") };
+    let raw: string, body: unknown;
+    try { ({ raw, body } = await jsonBody(request)); } catch (error) {
+      if (error instanceof PlatformError) return { response: json({ error: error.code, code: error.code }, error.status) };
+      throw error;
+    }
+    const rpc = record(body) ? body : {};
+    const method = typeof rpc.method === "string" ? rpc.method : "";
+    const id = typeof rpc.id === "string" || typeof rpc.id === "number" ? rpc.id : null;
+    const rpcError = (code: number, message: string, status = 200) => json({ jsonrpc: "2.0", id, error: { code, message } }, status);
+    const forward = (bearer: string) => {
+      const headers = new Headers(request.headers);
+      headers.set("authorization", `Bearer ${bearer}`);
+      return new Request(request.url, { method: "POST", headers, body: raw, signal: request.signal });
+    };
+    const withSession = (response: Response, session: string) => {
+      const headers = new Headers(response.headers);
+      headers.set(SESSION_HEADER, session);
+      return new Response(response.body, { status: response.status, headers });
+    };
+    const authenticated = async (session: string) => {
+      const context: DispatchContext = {};
+      const response = await dispatch(forward(session), context);
+      return { response: withSession(response, session), actor: context.actor };
+    };
+    const sessionId = request.headers.get(SESSION_HEADER);
+    try {
+      if (!sessionId) {
+        if (method !== "initialize") return { response: rpcError(-32000, "No MCP session: send initialize first", 400) };
+        const session = await openSession(db, onboarding.policy ?? DEFAULT_POLICY);
+        // initialize, tools/list and notifications never reach the backend, so no credential is needed yet.
+        return { response: withSession(await mcp(forward("onboarding")), session) };
+      }
+      const state = await sessionState(db, sessionId);
+      if (state.state === "unknown") return { response: rpcError(-32001, "MCP session not found: initialize again", 404) };
+      if (state.state === "registered") return authenticated(sessionId);
+      if (method === "initialize" || method === "tools/list" || method === "ping" || method.startsWith("notifications/")) {
+        return { response: withSession(await mcp(forward("onboarding")), sessionId) };
+      }
+      const params = record(rpc.params) ? rpc.params : {};
+      if (method === "tools/call" && params.name === "register_participant") {
+        const role = record(params.arguments) ? params.arguments.role : undefined;
+        if (role !== "buyer" && role !== "supplier") return { response: rpcError(-32602, "register_participant needs role buyer or supplier") };
+        await onboard(db, sessionId, role, onboarding);
+        return authenticated(sessionId);
+      }
+      return { response: rpcError(-32001, "Not registered yet: call register_participant with role (buyer or supplier), your demo company and mandate") };
+    } catch {
+      return { response: json({ error: "ONBOARDING_UNAVAILABLE", code: "ONBOARDING_UNAVAILABLE" }, 503) };
     }
   }
 

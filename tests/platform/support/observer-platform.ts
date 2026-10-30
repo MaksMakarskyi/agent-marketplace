@@ -5,6 +5,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { PlatformClient } from "../../../src/agents/client.js";
 import type { Database } from "../../../src/platform/database.js";
 import type { ObserverBus } from "../../../src/platform/observer.js";
+import type { OnboardingOptions } from "../../../src/platform/onboarding.js";
 import { attachObserverSocket } from "../../../src/platform/observer-socket.js";
 import { createPlatformHttp } from "../../../src/platform/http.js";
 import { Marketplace } from "../../../src/platform/marketplace.js";
@@ -26,7 +27,7 @@ export const NOTICE_NUMBER = "123456-2026";
 export const MIGRATIONS = [
   "20261030120000_initial_schema.sql",
   "20261030133000_live_marketplace_api.sql",
-  "20261030170000_observer.sql",
+  "20261030170000_observer.sql", "20261030190000_demo_onboarding.sql",
 ];
 /** Distinctive private limits, so a test can prove none of them reaches the observer. */
 export const PRIVATE = { buyerMaxOrder: 20_017, buyerMaxRun: 40_019, supplierFloor: 1_013, requestMax: 19_997 };
@@ -46,6 +47,8 @@ export interface ObserverPlatformOptions {
   wrapDb?: (db: Database) => Database;
   /** Attach the /observer/ws log stream bus. */
   observer?: ObserverBus;
+  /** Enable automatic MCP-session onboarding. */
+  onboarding?: OnboardingOptions;
   /** With `observer`, also serve /observer/ws on the fixture server, requiring this token. */
   streamToken?: string;
 }
@@ -125,7 +128,7 @@ export async function createObserverPlatform(options: ObserverPlatformOptions = 
   const paymentStore = new PostgresPaymentStore(database);
   const market = new Marketplace(database, { collector, ted: new TedClient({ fetch: fetcher }), paymentStore,
     settlement: new SettlementService(paymentStore, provider) });
-  const platform = createPlatformHttp(database, market, { paymentConfigured: true, ...(options.observer ? { observer: options.observer } : {}),
+  const platform = createPlatformHttp(database, market, { paymentConfigured: true, ...(options.observer ? { observer: options.observer } : {}), ...(options.onboarding ? { onboarding: options.onboarding } : {}),
     observerApi: { environment: options.environment ?? "local-fixture", allowedOrigins: options.allowedOrigins ?? [] } });
 
   const server = http.createServer(async (req, res) => {

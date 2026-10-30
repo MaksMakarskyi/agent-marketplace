@@ -11,9 +11,9 @@ Jenya's latest requirement: two bots open the backend link and create their own 
 
 ## Backend owner: parallel work
 
-1. Implement public demo enrollment and automatic session identity for the actual Grok/Instinct transport. The bots create their own profiles; a person must not provision participant keys or company records. Preserve separate buyer/supplier identities and sandbox-only transactions. Existing participant endpoints still require credentials until this separate change lands.
-2. Own new enrollment files, a separate additive migration and its tests. Coordinate shared HTTP/MCP changes with the integration owner instead of replacing its routes. No duplicate source connector or observer implementation is needed.
-3. Automate required saved Stripe test-payment setup. Never ask users for real card details or give bots provider/cloud secrets. Use the existing settlement service and webhook flow.
+1. PR #25 now implements public demo enrollment over automatic MCP sessions. The bots create their own profiles without manually supplied keys. Verify that the actual Grok/Instinct clients retain the returned `Mcp-Session-Id` header. Preserve separate identities and sandbox-only transactions.
+2. Apply the onboarding migration `20261030190000_demo_onboarding.sql` as well as the directory migration. Both HTTP/MCP and public observer wiring are combined in this integration; no duplicate implementation is needed.
+3. PR #25 attempts saved Stripe test-card setup automatically for new buyers. Verify that it succeeds on the hosted service; registration can succeed while card setup fails. Never ask users for real card details or give bots provider/cloud secrets. Use the existing settlement service and webhook flow.
 4. After integration review, apply the reviewed migrations and deploy the exact verified revision to the existing Cloud Run backend. Preserve existing secrets, database settings and webhook configuration. The current Codex account cannot access the backend project, so the existing owner must perform deployment.
 
 Backend: https://agent-marketplace-282760894344.europe-west1.run.app

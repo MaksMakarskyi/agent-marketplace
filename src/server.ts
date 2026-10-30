@@ -8,6 +8,7 @@
  *   DB_SSL=disable          only accepted for a database on localhost
  *   OBSERVER_TOKEN          read-only token for the /observer/ws log stream; without it, loopback only
  *   OBSERVER_ALLOWED_ORIGINS comma-separated https origins of the read-only observer page (CORS)
+ *   DEMO_ONBOARDING=off     disables automatic MCP-session onboarding (on by default for this demo)
  *   DEPLOYMENT_ENVIRONMENT  label shown on the observer page (default "hosted")
  *   PUBLIC_DEMO_OBSERVER=false disables the public read-only demo dashboard API (enabled by default)
  */
@@ -64,9 +65,11 @@ export function buildDependencies(env: NodeJS.ProcessEnv, observer = new Observe
   const paymentStore = new PostgresPaymentStore(pool);
   let settlement: SettlementService | undefined;
   let webhookSecret: string | undefined;
+  let stripeClient: StripeClient | undefined;
   if (env.STRIPE_SECRET_KEY || env.STRIPE_WEBHOOK_SECRET) {
     const stripe = readStripeConfig(env, { requireWebhookSecret: !!env.STRIPE_WEBHOOK_SECRET });
-    settlement = new SettlementService(paymentStore, new StripeSandboxProvider(new StripeClient(stripe)));
+    stripeClient = new StripeClient(stripe);
+    settlement = new SettlementService(paymentStore, new StripeSandboxProvider(stripeClient));
     webhookSecret = stripe.webhookSecret;
   }
   const market = new Marketplace(postgresDatabase(pool), { paymentStore, ...(settlement ? { settlement } : {}) });
@@ -74,6 +77,8 @@ export function buildDependencies(env: NodeJS.ProcessEnv, observer = new Observe
     paymentConfigured: !!settlement && !!webhookSecret,
     observer,
     publicDemoObserver: { enabled: env.PUBLIC_DEMO_OBSERVER !== "false" },
+    // Demo-only: bots onboard themselves over MCP sessions unless DEMO_ONBOARDING=off.
+    ...(env.DEMO_ONBOARDING === "off" ? {} : { onboarding: { stripe: stripeClient } }),
     observerApi: { allowedOrigins: observerOrigins(env), environment: env.DEPLOYMENT_ENVIRONMENT ?? "hosted" },
   }) };
   if (settlement && webhookSecret) deps.stripeWebhook = { settlement, secret: webhookSecret };
